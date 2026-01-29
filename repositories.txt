@@ -1,0 +1,98 @@
+# DevRel Research Agent - Repository Tracking List
+# This file contains all repositories to be tracked across different categories
+
+# AI Agent Frameworks (10)
+langchain-ai/langgraph
+langchain-ai/langchain
+crewAIInc/crewAI
+microsoft/autogen
+run-llama/llama_index
+pydantic/pydantic-ai
+Significant-Gravitas/AutoGPT
+deepset-ai/haystack
+microsoft/semantic-kernel
+AgentOps-AI/AgentOps
+
+# AI Chat/LLM UIs (10)
+open-webui/open-webui
+mckaywrigley/chatbot-ui
+lobehub/lobe-chat
+Mintplex-Labs/anything-llm
+ChatGPTNextWeb/ChatGPT-Next-Web
+danny-avila/LibreChat
+assistant-ui/assistant-ui
+ivanfioravanti/chatbot-ollama
+langchain-ai/opengpts
+ztjhz/BetterChatGPT
+
+# Frontend Frameworks (10)
+facebook/react
+vuejs/vue
+sveltejs/svelte
+angular/angular
+solidjs/solid
+preactjs/preact
+alpinejs/alpine
+lit/lit
+vuejs/core
+qwikdev/qwik
+
+# Meta-Frameworks (10)
+vercel/next.js
+nuxt/nuxt
+sveltejs/kit
+remix-run/remix
+withastro/astro
+gatsbyjs/gatsby
+analogjs/analog
+t3-oss/create-t3-app
+redwoodjs/redwood
+blitzjs/blitz
+
+# Backend JavaScript Frameworks (10)
+expressjs/express
+fastify/fastify
+nestjs/nest
+koajs/koa
+adonisjs/core
+hapijs/hapi
+sailshq/sails
+feathersjs/feathers
+trpc/trpc
+strapi/strapi
+
+# Backend Python Frameworks (10)
+fastapi/fastapi
+django/django
+pallets/flask
+tornadoweb/tornado
+bottlepy/bottle
+encode/starlette
+pylons/pyramid
+sanic-org/sanic
+reflex-dev/reflex
+tiangolo/full-stack-fastapi-template
+
+# Databases & ORMs (10)
+postgres/postgres
+mongodb/mongo
+redis/redis
+mysql/mysql-server
+elastic/elasticsearch
+cockroachdb/cockroach
+sqlalchemy/sqlalchemy
+prisma/prisma
+supabase/supabase
+apache/cassandra
+
+# Package Management (10)
+npm/cli
+yarnpkg/berry
+pnpm/pnpm
+oven-sh/bun
+pypa/pip
+python-poetry/poetry
+astral-sh/uv
+pypa/pipenv
+conda/conda
+jsr-io/jsr

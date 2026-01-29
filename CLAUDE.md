@@ -1,0 +1,197 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+DevRel Research Agent is a multi-agent system built on LangChain's DeepAgents framework. It helps Developer Advocates evaluate technologies by analyzing GitHub health metrics, community sentiment, and real-world adoption signals, then stores results in Elasticsearch for historical tracking.
+
+## Common Commands
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Setup Elasticsearch indices (required before first use)
+python scripts/setup_elasticsearch.py
+
+# Natural language queries (LLM finds and analyzes repos automatically)
+python cli.py ask "What are the best Python web frameworks and how do they compare?"
+python cli.py ask "Evaluate the top 3 LLM orchestration libraries"
+python cli.py ask "Compare MongoDB vs PostgreSQL for real-time analytics"
+
+# Discover new technologies for a use case
+python cli.py discover "UI frameworks for multi-modal AI chat"
+python cli.py discover "real-time collaboration libraries" --limit 5
+
+# Evaluate a specific repository
+python cli.py evaluate langchain-ai/deepagents
+python cli.py evaluate langchain-ai/deepagents --use-case "building research agents"
+
+# Compare multiple repositories
+python cli.py compare crewAIInc/crewAI microsoft/autogen --use-case "multi-agent orchestration"
+
+# Search previously researched technologies (in Elasticsearch)
+python cli.py search "AI agent frameworks" --tags ai-agents python
+
+# Export results to file
+python cli.py evaluate langchain-ai/deepagents --output report.md --format markdown
+
+# Verbose mode - see real-time agent activity
+python cli.py ask "Compare MongoDB and Elasticsearch" --verbose
+python cli.py compare mongodb/mongo elastic/elasticsearch -v
+
+# Run test suite
+python scripts/test_agent.py
+
+# Test Elastic Agent ES|QL tools
+python scripts/test_elastic_agent_tools.py
+python scripts/test_elastic_agent_tools.py --tool get-trend-data
+python scripts/test_elastic_agent_tools.py --list
+```
+
+## Architecture
+
+### Agent Hierarchy
+
+The system uses a **main orchestrator agent** (`agent.py`) that delegates to four specialized subagents:
+
+1. **metrics-agent** (`subagents/metrics_agent.py`) - Fetches GitHub repository metrics (stars, commits, contributors, issue close rates)
+2. **sentiment-agent** (`subagents/sentiment_agent.py`) - Analyzes community sentiment from issues and discussions
+3. **web-agent** (`subagents/web_agent.py`) - Researches external adoption signals (blog posts, case studies, job postings)
+4. **elastic-agent** (`subagents/elastic_agent.py`) - Interfaces with Elastic serverless agent for ES|QL queries, semantic search, trend analysis, and data retrieval
+
+The orchestrator coordinates these subagents in parallel, synthesizes their findings, and calculates a viability score.
+
+### Agent Initialization
+
+The agent uses **lazy initialization** to avoid import-time side effects:
+
+```python
+from agent import get_agent, reset_agent
+
+# Get the singleton agent instance (created on first call)
+agent = get_agent()
+result = agent.invoke({"messages": [...]})
+
+# For testing: reset the agent singleton
+reset_agent()
+```
+
+This pattern ensures:
+- No agent creation at import time (fast imports)
+- Thread-safe singleton via double-checked locking
+- Testable code (can mock or reset the agent)
+- Configuration validated only when agent is first requested
+
+### Elastic Agent Integration
+
+The elastic-agent subagent connects to the **Elastic Agent Builder** in your Elastic serverless instance. It uses ES|QL tools for:
+- **Semantic search** - Find similar technologies using vector embeddings
+- **Trend analysis** - Query historical snapshots and time-series data
+- **Caching** - Check cached GitHub metrics and web search results
+- **Adoption signals** - Retrieve blog posts, case studies, job postings
+- **Reports** - Access past research reports and discoveries
+
+ES|QL tools are defined in `elastic_agent_tools.md` and created via the Kibana Dev Tools console.
+
+### Tool Categories
+
+Tools in `tools/` are split by domain:
+- `github_tools.py` - GitHub API interactions (`fetch_repo_metrics`, `fetch_recent_issues`, `fetch_repo_discussions`)
+- `elasticsearch_tools.py` - Data persistence, caching, and querying (direct ES client)
+- `elastic_agent_client.py` - Client for invoking ES|QL tools on the Elastic serverless agent
+- `elastic_subagent_tools.py` - LangChain tools wrapping the Elastic agent client (16 tools)
+- `scoring_tools.py` - Viability scoring logic (`calculate_viability_score`)
+
+### GitHub API Optimizations
+
+The GitHub tools include several performance and reliability features:
+
+**Connection Pooling:**
+```python
+from tools import get_github_client, close_github_client
+
+client = get_github_client()  # Singleton with HTTP/2, keepalive
+# ... use client ...
+close_github_client()  # Called automatically at exit
+```
+
+**Rate Limiting:**
+```python
+from tools import get_remaining_github_calls, get_github_rate_limit_stats
+
+remaining = get_remaining_github_calls()  # Check available quota
+stats = get_github_rate_limit_stats()     # Full usage statistics
+# Rate limiter uses token bucket algorithm (1000 calls/hour limit)
+```
+
+**Datetime Parsing:**
+- `parse_github_datetime()` helper function for efficient date parsing
+- Dates parsed once per commit, reused across all calculations (4.4x faster)
+
+### Data Storage
+
+**Elasticsearch Indices:**
+- `technology-research` - Main research snapshots with embeddings
+- `web-search-cache` - Cached Tavily search results (7-day TTL)
+- `github-metrics-cache` - Cached GitHub API responses (24-hour TTL)
+- `repo-timeseries` - Point-in-time metrics for trend graphs
+- `commit-history` - Weekly commit aggregates by author
+- `adoption-signals` - Structured web findings (case studies, blog posts)
+- `research-reports` - Final evaluation/comparison reports
+
+**File Output:**
+- `research_reports/` - Markdown reports saved automatically after each evaluation/comparison
+
+### Configuration
+
+All configuration is managed through `config.py`, which loads from `.env`:
+- API keys: `ANTHROPIC_API_KEY`, `TAVILY_API_KEY`, `GITHUB_TOKEN`, `ELASTICSEARCH_API_KEY`
+- Elasticsearch: `ELASTICSEARCH_HOST`
+- Kibana/Elastic Agent: `KIBANA_URL` (optional - derived from ES host), `KIBANA_API_KEY` (optional - uses ES key)
+- Observability: `LANGSMITH_API_KEY`, `LANGCHAIN_PROJECT`
+
+The `Config.validate()` method checks for required environment variables at startup.
+
+**Security Features:**
+```python
+from config import config, sanitize_for_logging
+
+# Get safe config summary for logging (API keys masked)
+summary = config.get_config_summary()
+# {"ANTHROPIC_API_KEY": "sk-a***", "GITHUB_TOKEN": "ghp_***", ...}
+
+# Sanitize arbitrary text that might contain secrets
+safe_text = sanitize_for_logging(potentially_sensitive_text)
+```
+
+Sensitive keys are automatically detected and masked in logs.
+
+### Prompts
+
+System prompts in `prompts.py` define:
+- Main orchestrator behavior and research workflow
+- Output format templates for evaluations and comparisons
+- Delegation rules and concurrency limits
+
+### Error Handling
+
+Custom exceptions in `exceptions.py`:
+- `DevRelResearchError` - Base exception for all errors
+- `GitHubAPIError` - GitHub API request failures
+- `RateLimitError` - API rate limits exceeded (includes `retry_after` seconds)
+- `ElasticsearchError` - Elasticsearch operation failures
+- `ConfigurationError` - Missing or invalid configuration
+- `SubAgentError` - Subagent task failures
+- `ScoringError` - Viability scoring failures
+- `SearchError` - Web search operation failures
+
+## Code Quality
+
+See `TODO.md` for the current improvement roadmap. Completed optimizations:
+- API key sanitization in logs
+- HTTP connection pooling for GitHub (30-50% faster)
+- Rate limiting with token bucket algorithm
+- Lazy agent initialization (no import-time side effects)
+- Datetime parsing optimization (4.4x faster)

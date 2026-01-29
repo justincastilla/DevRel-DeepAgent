@@ -1,0 +1,174 @@
+"""
+Configuration module for DevRel Research Agent.
+Loads environment variables and provides centralized configuration.
+"""
+
+import os
+import re
+from typing import Optional
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Keys that should never be logged in plain text
+_SENSITIVE_KEYS = {
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "TAVILY_API_KEY",
+    "GITHUB_TOKEN",
+    "GITHUB_API_KEY",
+    "ELASTICSEARCH_API_KEY",
+    "KIBANA_API_KEY",
+    "LANGSMITH_API_KEY",
+}
+
+# Patterns that look like API keys (for sanitizing arbitrary strings)
+_API_KEY_PATTERNS = [
+    re.compile(r"sk-[a-zA-Z0-9]{20,}"),  # OpenAI-style
+    re.compile(r"ghp_[a-zA-Z0-9]{36}"),  # GitHub PAT
+    re.compile(r"gho_[a-zA-Z0-9]{36}"),  # GitHub OAuth
+    re.compile(r"github_pat_[a-zA-Z0-9_]{22,}"),  # GitHub fine-grained PAT
+    re.compile(r"[a-zA-Z0-9+/]{40,}={0,2}"),  # Base64 encoded keys (40+ chars)
+    re.compile(r"tvly-[a-zA-Z0-9]{20,}"),  # Tavily-style
+]
+
+
+class Config:
+    """Central configuration class."""
+
+    # LLM Provider
+    ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+    # Web Search
+    TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+
+    # GitHub API
+    GITHUB_TOKEN = os.getenv("GITHUB_API_KEY")  # Using GITHUB_API_KEY from .env
+
+    # Elasticsearch
+    ELASTICSEARCH_URL = os.getenv("ELASTICSEARCH_HOST")  # Using ELASTICSEARCH_HOST from .env
+    ELASTICSEARCH_API_KEY = os.getenv("ELASTICSEARCH_API_KEY")
+
+    # Kibana (for Elastic Agent Builder)
+    KIBANA_URL = os.getenv("KIBANA_URL")  # Optional - derived from ELASTICSEARCH_HOST if not set
+    KIBANA_API_KEY = os.getenv("KIBANA_API_KEY")  # Optional - uses ELASTICSEARCH_API_KEY if not set
+
+    # Observability
+    LANGSMITH_API_KEY = os.getenv("LANGSMITH_API_KEY")
+    LANGCHAIN_PROJECT = os.getenv("LANGCHAIN_PROJECT", "devrel-research-agent")
+    LANGCHAIN_TRACING_V2 = os.getenv("LANGCHAIN_TRACING_V2", "true")
+
+    # Agent Configuration
+    MAX_CONCURRENT_SUBAGENTS = 3
+    MAX_ITERATIONS_PER_SUBAGENT = 5
+
+    # Logging
+    LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+    LOG_FILE = os.getenv("LOG_FILE", "devrel_research.log")
+
+    @classmethod
+    def validate(cls) -> list[str]:
+        """
+        Validate that required environment variables are set.
+        Returns list of missing variables.
+        """
+        missing = []
+
+        required_vars = {
+            "ANTHROPIC_API_KEY": cls.ANTHROPIC_API_KEY,
+            "TAVILY_API_KEY": cls.TAVILY_API_KEY,
+            "GITHUB_TOKEN": cls.GITHUB_TOKEN,
+            "ELASTICSEARCH_URL": cls.ELASTICSEARCH_URL,
+            "ELASTICSEARCH_API_KEY": cls.ELASTICSEARCH_API_KEY,
+        }
+
+        for var_name, var_value in required_vars.items():
+            if not var_value:
+                missing.append(var_name)
+
+        return missing
+
+    @staticmethod
+    def mask_value(value: Optional[str], visible_chars: int = 4) -> str:
+        """
+        Mask a sensitive value, showing only the first few characters.
+
+        Args:
+            value: The sensitive value to mask
+            visible_chars: Number of characters to show at the start
+
+        Returns:
+            Masked string like "sk-a1***" or "[NOT SET]"
+        """
+        if not value:
+            return "[NOT SET]"
+        if len(value) <= visible_chars:
+            return "***"
+        return f"{value[:visible_chars]}***"
+
+    @classmethod
+    def get_config_summary(cls) -> dict:
+        """
+        Get a safe-to-log summary of configuration.
+        All sensitive values are masked.
+
+        Returns:
+            Dictionary with configuration status (masked values)
+        """
+        return {
+            # API Keys (masked)
+            "ANTHROPIC_API_KEY": cls.mask_value(cls.ANTHROPIC_API_KEY),
+            "OPENAI_API_KEY": cls.mask_value(cls.OPENAI_API_KEY),
+            "TAVILY_API_KEY": cls.mask_value(cls.TAVILY_API_KEY),
+            "GITHUB_TOKEN": cls.mask_value(cls.GITHUB_TOKEN),
+            "ELASTICSEARCH_API_KEY": cls.mask_value(cls.ELASTICSEARCH_API_KEY),
+            "KIBANA_API_KEY": cls.mask_value(cls.KIBANA_API_KEY),
+            "LANGSMITH_API_KEY": cls.mask_value(cls.LANGSMITH_API_KEY),
+            # Non-sensitive values (shown in full)
+            "ELASTICSEARCH_URL": cls.ELASTICSEARCH_URL or "[NOT SET]",
+            "KIBANA_URL": cls.KIBANA_URL or "[NOT SET]",
+            "LANGCHAIN_PROJECT": cls.LANGCHAIN_PROJECT,
+            "LOG_LEVEL": cls.LOG_LEVEL,
+            "MAX_CONCURRENT_SUBAGENTS": cls.MAX_CONCURRENT_SUBAGENTS,
+            "MAX_ITERATIONS_PER_SUBAGENT": cls.MAX_ITERATIONS_PER_SUBAGENT,
+        }
+
+    @classmethod
+    def is_sensitive_key(cls, key_name: str) -> bool:
+        """
+        Check if a configuration key name is sensitive.
+
+        Args:
+            key_name: The name of the configuration key
+
+        Returns:
+            True if the key should be treated as sensitive
+        """
+        return key_name.upper() in _SENSITIVE_KEYS
+
+
+def sanitize_for_logging(text: str) -> str:
+    """
+    Sanitize a string by masking any detected API keys.
+    Use this before logging any string that might contain credentials.
+
+    Args:
+        text: The text to sanitize
+
+    Returns:
+        Text with API keys masked
+    """
+    if not text:
+        return text
+
+    result = text
+    for pattern in _API_KEY_PATTERNS:
+        result = pattern.sub(lambda m: f"{m.group(0)[:4]}***", result)
+
+    return result
+
+
+# Create singleton instance
+config = Config()
