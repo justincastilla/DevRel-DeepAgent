@@ -49,7 +49,6 @@ def semantic_search_technologies(description: str, limit: int = 5) -> dict:
                 "limit": limit,
             }
         )
-        logger.info(f"Semantic search found {len(result.get('results', []))} results")
         return result
 
     except ElasticAgentError as e:

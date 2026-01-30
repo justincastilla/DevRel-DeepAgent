@@ -15,11 +15,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from agent import get_agent
+from agent import get_agent, MODELS, DEFAULT_MODEL
 from config import config
 from utils.logging_utils import setup_logging, get_logger
 from exceptions import DevRelResearchError
-from tools.elasticsearch_tools import store_discovery
+from tools.elasticsearch_tools import store_discovery, get_cached_report, get_latest_report
 
 # Setup logging
 setup_logging()
@@ -94,6 +94,17 @@ class ProgressTracker:
             "🔍 Found {0} similar technologies",
         ),
         (r"Invoking Elastic agent tool: (.+)", "elastic", "🔧 Running: {0}"),
+        # Elastic Agent Builder tool invocations
+        (
+            r"\[ELASTIC TOOL\] Invoking: ([^\s]+) \((.+)\)",
+            "elastic",
+            "🔌 ES|QL Tool: {0}",
+        ),
+        (
+            r"\[ELASTIC TOOL\] ([^\s]+) returned (\d+) results",
+            "elastic",
+            "✅ {0}: {1} results",
+        ),
         # Storage patterns
         (
             r"Stored timeseries snapshot for (.+)",
@@ -301,11 +312,220 @@ class ProgressDisplay:
 # Global verbose flag
 _verbose_mode = False
 
+# Minimum word count for reports
+MIN_REPORT_WORDS = 2000
+MAX_EXPANSION_ATTEMPTS = 2
+
+# Cache settings
+CACHE_MAX_AGE_DAYS = 7
+
+
+def check_for_cached_report(repo: str, force_refresh: bool = False) -> Optional[dict]:
+    """
+    Check Elasticsearch for a recent cached report.
+
+    Args:
+        repo: Repository name (owner/repo)
+        force_refresh: If True, skip cache and return None
+
+    Returns:
+        Cached report dict if found and fresh, None otherwise
+    """
+    if force_refresh:
+        logger.info(f"Force refresh requested, skipping cache check for {repo}")
+        return None
+
+    try:
+        # First try to get a report within the cache age limit
+        cached = get_cached_report(repo, max_age_days=CACHE_MAX_AGE_DAYS)
+        if cached:
+            logger.info(f"Found cached report for {repo} from {cached.get('timestamp', 'unknown')}")
+            return cached
+
+        # If no recent cache, check if there's any report at all
+        latest = get_latest_report(repo)
+        if latest:
+            age_str = latest.get('timestamp', 'unknown')
+            logger.info(f"Found older report for {repo} from {age_str} (outside cache window)")
+            # Return None to trigger fresh research, but log that we have old data
+
+        return None
+    except Exception as e:
+        logger.warning(f"Cache check failed for {repo}: {e}")
+        return None
+
+
+def display_cached_report(report: dict, repo: str) -> str:
+    """
+    Format a cached report for display.
+
+    Args:
+        report: The cached report dict from Elasticsearch
+        repo: Repository name
+
+    Returns:
+        Formatted report string
+    """
+    full_report = report.get('full_report', '')
+    if full_report:
+        # Add a header indicating this is cached
+        timestamp = report.get('timestamp', 'unknown')
+        header = f"""
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  📦 CACHED REPORT - Retrieved from Elasticsearch                              ║
+║  Repository: {repo:<62} ║
+║  Cached on: {timestamp[:19]:<63} ║
+║                                                                              ║
+║  To force a fresh report, use: --refresh                                     ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+"""
+        return header + full_report
+
+    # If no full report, construct a summary
+    summary = f"""
+# Cached Research Summary: {repo}
+
+**Cached on**: {report.get('timestamp', 'Unknown')}
+**Viability Score**: {report.get('viability_score', 'N/A')}/100
+**Recommendation**: {report.get('recommendation', 'N/A')}
+
+## Scores
+- Health: {report.get('health_score', 'N/A')}/40
+- Community: {report.get('community_score', 'N/A')}/30
+- Adoption: {report.get('adoption_score', 'N/A')}/30
+
+## Summary
+{report.get('summary', 'No summary available')}
+
+## Strengths
+{report.get('strengths', 'No strengths recorded')}
+
+## Concerns
+{report.get('concerns', 'No concerns recorded')}
+
+---
+*This is a cached summary. Run with --refresh to generate a full fresh report.*
+"""
+    return summary
+
 
 def set_verbose_mode(verbose: bool):
     """Set global verbose mode."""
     global _verbose_mode
     _verbose_mode = verbose
+
+
+def count_words(text: str) -> int:
+    """Count words in text, excluding code blocks and URLs."""
+    # Remove code blocks
+    text = re.sub(r'```[\s\S]*?```', '', text)
+    # Remove URLs
+    text = re.sub(r'https?://\S+', '', text)
+    # Count words
+    words = text.split()
+    return len(words)
+
+
+def validate_and_expand_report(agent, initial_response: str, query: str, llm: str = None) -> str:
+    """
+    Validate report length and request expansion if too short.
+
+    Args:
+        agent: The agent instance
+        initial_response: The initial report response
+        query: The original query for context
+        llm: The LLM being used (for display)
+
+    Returns:
+        The final (possibly expanded) report
+    """
+    llm_display = f" ({llm})" if llm else ""
+    response = initial_response
+    word_count = count_words(response)
+    best_response = response
+    best_word_count = word_count
+
+    for attempt in range(MAX_EXPANSION_ATTEMPTS):
+        if word_count >= MIN_REPORT_WORDS:
+            logger.info(f"Report meets length requirement: {word_count} words")
+            break
+
+        logger.warning(f"Report too short ({word_count} words), requesting expansion (attempt {attempt + 1}/{MAX_EXPANSION_ATTEMPTS})")
+        print(f"\n⚠️  Report is {word_count} words (minimum: {MIN_REPORT_WORDS}). Requesting expansion (attempt {attempt + 1}/{MAX_EXPANSION_ATTEMPTS})...")
+
+        expansion_prompt = f"""Your previous report was only {word_count} words. The minimum requirement is {MIN_REPORT_WORDS} words.
+
+## CRITICAL RULES - READ CAREFULLY:
+
+1. **DO NOT make any new web searches** - No Tavily searches, no web-research-agent calls
+2. **DO NOT make any new GitHub API calls** - No metrics-agent or sentiment-agent calls
+3. **ONLY use elastic-agent** to retrieve data ALREADY STORED in Elasticsearch
+
+## Required Actions (Elasticsearch ONLY):
+
+Use elastic-agent to retrieve EXISTING data:
+- `get_adoption_signals` - Get all blog posts, case studies, tutorials already recorded
+- `get_latest_snapshot` - Get the metrics snapshot already stored
+- `get_repository_trends` - Get historical data if available
+
+## Then EXPAND the report by:
+
+1. **Including ALL URLs** from the adoption signals stored in Elasticsearch
+2. **Adding more detail** to each section (2-3 paragraphs minimum per section)
+3. **Expanding the Executive Summary** to 3-4 full paragraphs
+4. **Adding detailed analysis** for each strength and weakness
+5. **Including complete metrics tables** with all numbers from the snapshot
+
+## Your Previous Report:
+
+{response}
+
+## Output Requirements:
+- The expanded report MUST be longer than {word_count} words
+- Target: {MIN_REPORT_WORDS}+ words
+- Include every URL from stored adoption signals
+- NO new API calls - only Elasticsearch retrieval"""
+
+        try:
+            with spinner(f"Expanding report{llm_display}"):
+                result = agent.invoke({
+                    "messages": [
+                        {"role": "user", "content": query},
+                        {"role": "assistant", "content": response},
+                        {"role": "user", "content": expansion_prompt}
+                    ]
+                })
+            new_response = result["messages"][-1].content
+            new_word_count = count_words(new_response)
+
+            # Only accept expansion if it's actually longer
+            if new_word_count > word_count:
+                response = new_response
+                word_count = new_word_count
+                print(f"✅ Expanded to {word_count} words")
+
+                # Track best response
+                if word_count > best_word_count:
+                    best_response = response
+                    best_word_count = word_count
+            else:
+                logger.warning(f"Expansion produced shorter output ({new_word_count} vs {word_count}), keeping previous version")
+                print(f"⚠️  Expansion was shorter ({new_word_count} words), keeping previous version")
+
+        except Exception as e:
+            logger.error(f"Expansion failed: {e}")
+            break
+
+    # Always return the longest version we got
+    if best_word_count > count_words(response):
+        response = best_response
+        word_count = best_word_count
+
+    if word_count < MIN_REPORT_WORDS:
+        print(f"\n⚠️  Final report is {word_count} words after {MAX_EXPANSION_ATTEMPTS} expansion attempts (target: {MIN_REPORT_WORDS})")
+
+    return response
 
 
 @contextmanager
@@ -518,12 +738,17 @@ fall back to gathering metrics from public web sources.
 """
 
     try:
-        with spinner("Researching your query"):
-            result = get_agent().invoke(
+        llm = getattr(args, 'llm', None) or DEFAULT_MODEL
+        agent = get_agent(model=llm)
+        with spinner(f"Researching your query ({llm})"):
+            result = agent.invoke(
                 {"messages": [{"role": "user", "content": enhanced_query}]}
             )
 
         response = result["messages"][-1].content
+
+        # Validate length and expand if needed
+        response = validate_and_expand_report(agent, response, enhanced_query, llm)
 
         print(response)
 
@@ -547,25 +772,51 @@ fall back to gathering metrics from public web sources.
 def evaluate_command(args):
     """Evaluate a single repository."""
     repo = args.repo
-    query = f"Evaluate {repo}"
+    force_refresh = getattr(args, 'refresh', False)
 
-    if args.use_case:
-        query += f" for {args.use_case}"
-
-    logger.info(f"CLI: Evaluating {repo}")
+    logger.info(f"CLI: Evaluating {repo} (refresh={force_refresh})")
     print(f"\n{'='*80}")
     print(f"Evaluating: {repo}")
     if args.use_case:
         print(f"Use Case: {args.use_case}")
     print(f"{'='*80}\n")
 
+    # CHECK CACHE FIRST (unless --refresh is specified)
+    if not force_refresh:
+        print("🔍 Checking for cached report...")
+        cached_report = check_for_cached_report(repo, force_refresh=force_refresh)
+        if cached_report:
+            print("✅ Found cached report! Using existing research.\n")
+            response = display_cached_report(cached_report, repo)
+            print(response)
+
+            # Still save to file (with cached indicator)
+            report_path = save_report_to_file(response, "evaluation_cached", repo)
+            print(f"\n📄 Report saved: {report_path}")
+
+            if args.output:
+                export_result(response, args.output, args.format)
+
+            return 0
+        else:
+            print("📭 No recent cached report found. Running fresh research...\n")
+
+    query = f"Evaluate {repo}"
+    if args.use_case:
+        query += f" for {args.use_case}"
+
     try:
-        with spinner(f"Researching {repo}"):
-            result = get_agent().invoke(
+        llm = getattr(args, 'llm', None) or DEFAULT_MODEL
+        agent = get_agent(model=llm)
+        with spinner(f"Researching {repo} ({llm})"):
+            result = agent.invoke(
                 {"messages": [{"role": "user", "content": query}]}
             )
 
         response = result["messages"][-1].content
+
+        # Validate length and expand if needed
+        response = validate_and_expand_report(agent, response, query, llm)
 
         print(response)
 
@@ -588,25 +839,57 @@ def evaluate_command(args):
 def compare_command(args):
     """Compare multiple repositories."""
     repos = args.repos
-    query = f"Compare {' vs '.join(repos)}"
+    force_refresh = getattr(args, 'refresh', False)
 
-    if args.use_case:
-        query += f" for {args.use_case}"
-
-    logger.info(f"CLI: Comparing {len(repos)} repositories")
+    logger.info(f"CLI: Comparing {len(repos)} repositories (refresh={force_refresh})")
     print(f"\n{'='*80}")
     print(f"Comparing: {', '.join(repos)}")
     if args.use_case:
         print(f"Use Case: {args.use_case}")
     print(f"{'='*80}\n")
 
+    # CHECK CACHE FIRST for all repos (unless --refresh is specified)
+    if not force_refresh:
+        print("🔍 Checking for cached reports...")
+        cached_reports = {}
+        missing_repos = []
+
+        for repo in repos:
+            cached = check_for_cached_report(repo, force_refresh=False)
+            if cached:
+                cached_reports[repo] = cached
+                print(f"  ✅ {repo}: cached report found")
+            else:
+                missing_repos.append(repo)
+                print(f"  📭 {repo}: no cached report")
+
+        # If ALL repos have cached reports, we can potentially skip fresh research
+        if len(cached_reports) == len(repos):
+            print("\n✅ All repositories have cached reports!")
+            print("💡 Use --refresh to force fresh comparison research.\n")
+
+            # Display cached data summary instead of full comparison
+            # (Agent would need to synthesize comparison from individual reports)
+            print("📊 Cached data available for all repositories.")
+            print("Running agent to synthesize comparison from cached data...\n")
+            # Don't return - let the agent use the cached data
+
+    query = f"Compare {' vs '.join(repos)}"
+    if args.use_case:
+        query += f" for {args.use_case}"
+
     try:
-        with spinner(f"Comparing {len(repos)} repositories"):
-            result = get_agent().invoke(
+        llm = getattr(args, 'llm', None) or DEFAULT_MODEL
+        agent = get_agent(model=llm)
+        with spinner(f"Comparing {len(repos)} repositories ({llm})"):
+            result = agent.invoke(
                 {"messages": [{"role": "user", "content": query}]}
             )
 
         response = result["messages"][-1].content
+
+        # Validate length and expand if needed
+        response = validate_and_expand_report(agent, response, query, llm)
 
         print(response)
 
@@ -647,8 +930,9 @@ def search_command(args):
     print(f"{'='*80}\n")
 
     try:
-        with spinner("Searching technologies"):
-            result = get_agent().invoke(
+        llm = getattr(args, 'llm', None) or DEFAULT_MODEL
+        with spinner(f"Searching technologies ({llm})"):
+            result = get_agent(model=llm).invoke(
                 {"messages": [{"role": "user", "content": query}]}
             )
 
@@ -728,8 +1012,9 @@ DO NOT evaluate the technologies yet - just discover and list them with links.
     print(f"{'='*80}\n")
 
     try:
-        with spinner(f"Discovering technologies"):
-            result = get_agent().invoke(
+        llm = getattr(args, 'llm', None) or DEFAULT_MODEL
+        with spinner(f"Discovering technologies ({llm})"):
+            result = get_agent(model=llm).invoke(
                 {"messages": [{"role": "user", "content": query}]}
             )
 
@@ -885,6 +1170,12 @@ Examples:
         action="store_true",
         help="Show detailed agent activity in real-time",
     )
+    ask_parser.add_argument(
+        "--llm",
+        choices=list(MODELS.keys()),
+        default=DEFAULT_MODEL,
+        help=f"LLM to use (default: {DEFAULT_MODEL})",
+    )
 
     # Evaluate command
     evaluate_parser = subparsers.add_parser(
@@ -907,6 +1198,18 @@ Examples:
         "-v",
         action="store_true",
         help="Show detailed agent activity in real-time",
+    )
+    evaluate_parser.add_argument(
+        "--llm",
+        choices=list(MODELS.keys()),
+        default=DEFAULT_MODEL,
+        help=f"LLM to use (default: {DEFAULT_MODEL})",
+    )
+    evaluate_parser.add_argument(
+        "--refresh",
+        "-r",
+        action="store_true",
+        help="Force fresh research, ignoring cached reports",
     )
 
     # Compare command
@@ -932,6 +1235,18 @@ Examples:
         "-v",
         action="store_true",
         help="Show detailed agent activity in real-time",
+    )
+    compare_parser.add_argument(
+        "--llm",
+        choices=list(MODELS.keys()),
+        default=DEFAULT_MODEL,
+        help=f"LLM to use (default: {DEFAULT_MODEL})",
+    )
+    compare_parser.add_argument(
+        "--refresh",
+        "-r",
+        action="store_true",
+        help="Force fresh research, ignoring cached reports",
     )
 
     # Discover command
@@ -962,6 +1277,12 @@ Examples:
         action="store_true",
         help="Show detailed agent activity in real-time",
     )
+    discover_parser.add_argument(
+        "--llm",
+        choices=list(MODELS.keys()),
+        default=DEFAULT_MODEL,
+        help=f"LLM to use (default: {DEFAULT_MODEL})",
+    )
 
     # Search command (searches existing research in Elasticsearch)
     search_parser = subparsers.add_parser(
@@ -985,6 +1306,12 @@ Examples:
         "-v",
         action="store_true",
         help="Show detailed agent activity in real-time",
+    )
+    search_parser.add_argument(
+        "--llm",
+        choices=list(MODELS.keys()),
+        default=DEFAULT_MODEL,
+        help=f"LLM to use (default: {DEFAULT_MODEL})",
     )
 
     # Batch command (stub)

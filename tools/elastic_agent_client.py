@@ -79,7 +79,9 @@ class ElasticAgentClient:
         """
         url = f"{self.kibana_url}/api/agent_builder/tools/_execute"
 
-        logger.debug(f"Invoking tool '{tool_id}' with params: {params}")
+        # Log tool invocation at INFO level for CLI visibility
+        param_summary = ", ".join(f"{k}={str(v)[:30]}" for k, v in params.items())
+        logger.info(f"[ELASTIC TOOL] Invoking: {tool_id} ({param_summary})")
 
         try:
             response = self._client.post(
@@ -93,7 +95,9 @@ class ElasticAgentClient:
 
             if response.status_code == 200:
                 result = response.json()
-                logger.debug(f"Tool '{tool_id}' returned successfully")
+                # Log result summary
+                result_count = len(result.get('results', result.get('data', []))) if isinstance(result, dict) else 0
+                logger.info(f"[ELASTIC TOOL] {tool_id} returned {result_count} results")
                 return result
             elif response.status_code == 404:
                 raise ElasticAgentError(
