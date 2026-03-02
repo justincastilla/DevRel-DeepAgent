@@ -489,13 +489,16 @@ Use elastic-agent to retrieve EXISTING data:
 
         try:
             with spinner(f"Expanding report{llm_display}"):
-                result = agent.invoke({
-                    "messages": [
-                        {"role": "user", "content": query},
-                        {"role": "assistant", "content": response},
-                        {"role": "user", "content": expansion_prompt}
-                    ]
-                })
+                result = agent.invoke(
+                    {
+                        "messages": [
+                            {"role": "user", "content": query},
+                            {"role": "assistant", "content": response},
+                            {"role": "user", "content": expansion_prompt}
+                        ]
+                    },
+                    config={"recursion_limit": config.RECURSION_LIMIT},
+                )
             new_response = result["messages"][-1].content
             new_word_count = count_words(new_response)
 
@@ -742,7 +745,8 @@ fall back to gathering metrics from public web sources.
         agent = get_agent(model=llm)
         with spinner(f"Researching your query ({llm})"):
             result = agent.invoke(
-                {"messages": [{"role": "user", "content": enhanced_query}]}
+                {"messages": [{"role": "user", "content": enhanced_query}]},
+                config={"recursion_limit": config.RECURSION_LIMIT},
             )
 
         response = result["messages"][-1].content
@@ -810,7 +814,8 @@ def evaluate_command(args):
         agent = get_agent(model=llm)
         with spinner(f"Researching {repo} ({llm})"):
             result = agent.invoke(
-                {"messages": [{"role": "user", "content": query}]}
+                {"messages": [{"role": "user", "content": query}]},
+                config={"recursion_limit": config.RECURSION_LIMIT},
             )
 
         response = result["messages"][-1].content
@@ -883,7 +888,8 @@ def compare_command(args):
         agent = get_agent(model=llm)
         with spinner(f"Comparing {len(repos)} repositories ({llm})"):
             result = agent.invoke(
-                {"messages": [{"role": "user", "content": query}]}
+                {"messages": [{"role": "user", "content": query}]},
+                config={"recursion_limit": config.RECURSION_LIMIT},
             )
 
         response = result["messages"][-1].content
@@ -933,7 +939,8 @@ def search_command(args):
         llm = getattr(args, 'llm', None) or DEFAULT_MODEL
         with spinner(f"Searching technologies ({llm})"):
             result = get_agent(model=llm).invoke(
-                {"messages": [{"role": "user", "content": query}]}
+                {"messages": [{"role": "user", "content": query}]},
+                config={"recursion_limit": config.RECURSION_LIMIT},
             )
 
         response = result["messages"][-1].content
@@ -1015,7 +1022,8 @@ DO NOT evaluate the technologies yet - just discover and list them with links.
         llm = getattr(args, 'llm', None) or DEFAULT_MODEL
         with spinner(f"Discovering technologies ({llm})"):
             result = get_agent(model=llm).invoke(
-                {"messages": [{"role": "user", "content": query}]}
+                {"messages": [{"role": "user", "content": query}]},
+                config={"recursion_limit": config.RECURSION_LIMIT},
             )
 
         response = result["messages"][-1].content

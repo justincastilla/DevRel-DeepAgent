@@ -64,8 +64,13 @@ exports/
 *.csv
 *.json
 reports/
+research_reports/
 
 # Temporary files
 tmp/
 temp/
 *.tmp
+
+TODO.md
+TODO-CLAUDE.md
+TODO-CURSOR.md

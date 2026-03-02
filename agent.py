@@ -3,6 +3,7 @@ Main DevRel Research Agent - Orchestrator for multi-agent research system.
 """
 
 import threading
+from functools import cached_property
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -114,6 +115,42 @@ def get_agent(model: str = None):
             store_research_report,
         )
 
+        # Build the model - use AnthropicFoundry client for Azure-hosted models
+        if model_key == "claude" and config.ANTHROPIC_FOUNDRY_RESOURCE:
+            from langchain_anthropic import ChatAnthropic
+            from anthropic import AnthropicFoundry, AsyncAnthropicFoundry
+
+            foundry_resource = config.ANTHROPIC_FOUNDRY_RESOURCE
+
+            class ChatAnthropicFoundry(ChatAnthropic):
+                """ChatAnthropic that uses AnthropicFoundry for Azure auth."""
+
+                @cached_property
+                def _client(self):
+                    client_params = {**self._client_params}
+                    client_params.pop("base_url", None)
+                    return AnthropicFoundry(
+                        **client_params,
+                        resource=foundry_resource,
+                    )
+
+                @cached_property
+                def _async_client(self):
+                    client_params = {**self._client_params}
+                    client_params.pop("base_url", None)
+                    return AsyncAnthropicFoundry(
+                        **client_params,
+                        resource=foundry_resource,
+                    )
+
+            model_instance = ChatAnthropicFoundry(
+                model_name="claude-sonnet-4-5",
+                anthropic_api_key=config.ANTHROPIC_API_KEY,
+                max_tokens=20000,
+            )
+        else:
+            model_instance = model_string
+
         # Build system prompt with configuration
         system_prompt = get_system_prompt(
             max_concurrent=config.MAX_CONCURRENT_SUBAGENTS,
@@ -123,10 +160,14 @@ def get_agent(model: str = None):
         logger.info(
             f"Creating DevRel Research Agent with model: {model_key} ({model_string})"
         )
+        if config.ANTHROPIC_FOUNDRY_RESOURCE:
+            logger.info(
+                f"Using Azure Foundry resource: {config.ANTHROPIC_FOUNDRY_RESOURCE}"
+            )
 
         # Create the main orchestrator agent
         _agent = create_deep_agent(
-            model=model_string,
+            model=model_instance,
             system_prompt=system_prompt,
             tools=[
                 # Elasticsearch tools for the orchestrator
@@ -183,7 +224,10 @@ if __name__ == "__main__":
     print(f"Query: {query}")
     print(f"{'='*80}\n")
 
-    result = get_agent().invoke({"messages": [{"role": "user", "content": query}]})
+    result = get_agent().invoke(
+        {"messages": [{"role": "user", "content": query}]},
+        config={"recursion_limit": config.RECURSION_LIMIT},
+    )
 
     print("\n" + "=" * 80)
     print("RESULT:")

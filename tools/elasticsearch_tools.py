@@ -8,12 +8,55 @@ from datetime import datetime, timedelta
 from typing import Optional
 from elasticsearch import Elasticsearch
 from langchain_core.tools import tool
+from pydantic import BaseModel, Field
 
 from config import config
 from exceptions import ElasticsearchError
 from utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
+
+
+# =============================================================================
+# Typed input models for store_research_snapshot
+# These are included in the tool schema sent to the LLM, constraining which
+# fields are valid and preventing invented keys like "date_range".
+# =============================================================================
+
+class SnapshotMetrics(BaseModel):
+    """Raw GitHub repository counts. All fields are integers."""
+    stars: int = Field(description="Total star count")
+    forks: int = Field(description="Total fork count")
+    open_issues: int = Field(description="Number of currently open issues")
+    closed_issues: int = Field(description="Number of closed issues")
+    open_prs: int = Field(description="Number of currently open pull requests")
+    merged_prs: int = Field(description="Number of merged pull requests")
+    contributors: int = Field(description="Total contributor count")
+
+
+class SnapshotDerived(BaseModel):
+    """Derived activity and velocity metrics computed from raw GitHub data."""
+    repo_age_days: Optional[int] = Field(None, description="Repository age in days")
+    stars_per_month: Optional[float] = Field(None, description="Average new stars per month")
+    commits_7d: Optional[int] = Field(None, description="Commits in the last 7 days")
+    commits_30d: Optional[int] = Field(None, description="Commits in the last 30 days")
+    commits_90d: Optional[int] = Field(None, description="Commits in the last 90 days")
+    unique_authors_7d: Optional[int] = Field(None, description="Unique committers in last 7 days")
+    unique_authors_30d: Optional[int] = Field(None, description="Unique committers in last 30 days")
+    issue_close_rate: Optional[float] = Field(None, description="Fraction of issues closed (0.0–1.0)")
+    pr_merge_rate: Optional[float] = Field(None, description="Fraction of PRs merged (0.0–1.0)")
+
+
+class SnapshotAnalysis(BaseModel):
+    """Scored analysis results from the research run."""
+    viability_score: float = Field(description="Overall viability score 0–100")
+    health_score: float = Field(description="Repository health component 0–40")
+    community_score: float = Field(description="Community health component 0–30")
+    adoption_score: float = Field(description="Adoption signal component 0–30")
+    sentiment_score: Optional[float] = Field(None, description="Community sentiment score 0–100")
+    risk_flags: list[str] = Field(default_factory=list, description="Identified risk factors")
+    recommendation: str = Field(description="Coverage recommendation: COVER, WATCH, or SKIP")
+    summary: str = Field(description="2–3 sentence plain-text research summary")
 
 
 def get_es_client() -> Elasticsearch:
@@ -37,6 +80,33 @@ def get_es_client() -> Elasticsearch:
     except Exception as e:
         logger.error(f"Failed to connect to Elasticsearch: {e}")
         raise ElasticsearchError(f"Failed to connect to Elasticsearch: {e}") from e
+
+
+def sanitize_metrics_for_es(metrics: dict) -> dict:
+    """
+    Sanitize metrics dict for Elasticsearch storage.
+
+    The 'technology-research' index maps known metric fields as integers.
+    Any extra fields the LLM adds (e.g. date_range, commit_velocity) may
+    collide with a previously auto-mapped type.  Convert nested dicts/lists
+    to JSON strings so the document is always storable.
+    """
+    KNOWN_INT_FIELDS = {
+        "stars", "forks", "open_issues", "closed_issues",
+        "open_prs", "merged_prs", "contributors",
+    }
+    sanitized = {}
+    for key, value in metrics.items():
+        if key in KNOWN_INT_FIELDS:
+            try:
+                sanitized[key] = int(value) if value is not None else 0
+            except (TypeError, ValueError):
+                sanitized[key] = 0
+        elif isinstance(value, (dict, list)):
+            sanitized[key] = json.dumps(value) if value else ""
+        else:
+            sanitized[key] = value
+    return sanitized
 
 
 def sanitize_analysis_for_es(analysis: dict) -> dict:
@@ -109,9 +179,10 @@ def sanitize_analysis_for_es(analysis: dict) -> dict:
 @tool
 def store_research_snapshot(
     repo_name: str,
-    metrics: dict,
-    analysis: dict,
-    tags: Optional[list[str]] = None
+    metrics: SnapshotMetrics,
+    analysis: SnapshotAnalysis,
+    derived: Optional[SnapshotDerived] = None,
+    tags: Optional[list[str]] = None,
 ) -> str:
     """
     Store a point-in-time research snapshot in Elasticsearch.
@@ -119,8 +190,9 @@ def store_research_snapshot(
 
     Args:
         repo_name: Full repository name (e.g., "langchain-ai/deepagents")
-        metrics: Raw metrics from GitHub API
-        analysis: Analysis results including sentiment, scores, flags
+        metrics: Raw GitHub counts — stars, forks, issues, PRs, contributors
+        analysis: Scored analysis results — viability, health, community, adoption scores
+        derived: Optional velocity metrics — commits_30d, issue_close_rate, etc.
         tags: Optional tags for categorization (e.g., ["ai-agents", "python"])
 
     Returns:
@@ -131,8 +203,12 @@ def store_research_snapshot(
     try:
         es = get_es_client()
 
-        # Sanitize analysis to match ES mapping
-        sanitized_analysis = sanitize_analysis_for_es(analysis)
+        # Convert Pydantic models to dicts (sanitizers handle type coercion as a safety net)
+        metrics_dict = metrics.model_dump()
+        analysis_dict = analysis.model_dump()
+
+        sanitized_metrics = sanitize_metrics_for_es(metrics_dict)
+        sanitized_analysis = sanitize_analysis_for_es(analysis_dict)
 
         # Create searchable text for embedding
         summary_text = f"{repo_name} {sanitized_analysis.get('summary', '')} {' '.join(tags or [])}"
@@ -140,11 +216,14 @@ def store_research_snapshot(
         doc = {
             "repo": repo_name,
             "timestamp": datetime.utcnow().isoformat(),
-            "metrics": metrics,
+            "metrics": sanitized_metrics,
             "analysis": sanitized_analysis,
             "tags": tags or [],
-            "semantic_content": summary_text,  # ES handles embedding automatically
+            "semantic_content": summary_text,
         }
+
+        if derived:
+            doc["derived"] = derived.model_dump(exclude_none=True)
 
         result = es.index(index="technology-research", document=doc)
         logger.info(f"Stored snapshot for {repo_name} with ID: {result['_id']}")

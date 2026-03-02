@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DevRel Research Agent</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <div class="header-brand">
+            <svg class="header-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="11" cy="11" r="8"/>
+                <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+            <h1>DevRel Research Agent</h1>
+        </div>
+        <div class="header-status">
+            <span id="connectionStatus" class="status-badge status-disconnected">Disconnected</span>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="main">
+        <!-- Input Section -->
+        <section class="input-section">
+            <form id="researchForm" class="research-form">
+                <div class="form-row">
+                    <div class="input-wrapper">
+                        <textarea
+                            id="queryInput"
+                            class="query-input"
+                            placeholder="Enter your research query... e.g., 'Compare MongoDB vs Elasticsearch for real-time analytics' or 'Evaluate langchain-ai/langgraph for building AI agents'"
+                            rows="2"
+                        ></textarea>
+                    </div>
+                    <div class="form-controls">
+                        <select id="modelSelect" class="model-select">
+                            <option value="claude">Claude</option>
+                            <option value="gpt">GPT</option>
+                        </select>
+                        <button type="submit" id="submitBtn" class="submit-btn">
+                            <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <line x1="22" y1="2" x2="11" y2="13"/>
+                                <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+                            </svg>
+                            <span>Research</span>
+                        </button>
+                    </div>
+                </div>
+            </form>
+        </section>
+
+        <!-- Phase Indicator -->
+        <section id="phaseBar" class="phase-bar hidden">
+            <div class="phase-steps">
+                <div class="phase-step" data-phase="initializing">
+                    <div class="phase-dot"></div>
+                    <span>Initialize</span>
+                </div>
+                <div class="phase-connector"></div>
+                <div class="phase-step" data-phase="checking_cache">
+                    <div class="phase-dot"></div>
+                    <span>Check Cache</span>
+                </div>
+                <div class="phase-connector"></div>
+                <div class="phase-step" data-phase="fetching_metrics">
+                    <div class="phase-dot"></div>
+                    <span>Metrics</span>
+                </div>
+                <div class="phase-connector"></div>
+                <div class="phase-step" data-phase="analyzing_sentiment">
+                    <div class="phase-dot"></div>
+                    <span>Sentiment</span>
+                </div>
+                <div class="phase-connector"></div>
+                <div class="phase-step" data-phase="web_research">
+                    <div class="phase-dot"></div>
+                    <span>Web Research</span>
+                </div>
+                <div class="phase-connector"></div>
+                <div class="phase-step" data-phase="scoring">
+                    <div class="phase-dot"></div>
+                    <span>Scoring</span>
+                </div>
+                <div class="phase-connector"></div>
+                <div class="phase-step" data-phase="storing_report">
+                    <div class="phase-dot"></div>
+                    <span>Save Report</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Dashboard Grid -->
+        <div id="dashboard" class="dashboard hidden">
+            <!-- Agent Status Cards -->
+            <section class="agent-cards">
+                <div class="agent-card" id="card-orchestrator">
+                    <div class="agent-card-header">
+                        <span class="agent-icon">&#x1F3AF;</span>
+                        <h3>Orchestrator</h3>
+                        <span class="agent-status" id="status-orchestrator">idle</span>
+                    </div>
+                    <div class="agent-card-body" id="activity-orchestrator">
+                        <p class="placeholder-text">Waiting for activity...</p>
+                    </div>
+                </div>
+
+                <div class="agent-card" id="card-metrics-agent">
+                    <div class="agent-card-header">
+                        <span class="agent-icon">&#x1F4CA;</span>
+                        <h3>Metrics Agent</h3>
+                        <span class="agent-status" id="status-metrics-agent">idle</span>
+                    </div>
+                    <div class="agent-card-body" id="activity-metrics-agent">
+                        <p class="placeholder-text">Waiting for activity...</p>
+                    </div>
+                </div>
+
+                <div class="agent-card" id="card-sentiment-agent">
+                    <div class="agent-card-header">
+                        <span class="agent-icon">&#x1F4AC;</span>
+                        <h3>Sentiment Agent</h3>
+                        <span class="agent-status" id="status-sentiment-agent">idle</span>
+                    </div>
+                    <div class="agent-card-body" id="activity-sentiment-agent">
+                        <p class="placeholder-text">Waiting for activity...</p>
+                    </div>
+                </div>
+
+                <div class="agent-card" id="card-web-research-agent">
+                    <div class="agent-card-header">
+                        <span class="agent-icon">&#x1F310;</span>
+                        <h3>Web Research Agent</h3>
+                        <span class="agent-status" id="status-web-research-agent">idle</span>
+                    </div>
+                    <div class="agent-card-body" id="activity-web-research-agent">
+                        <p class="placeholder-text">Waiting for activity...</p>
+                    </div>
+                </div>
+
+                <div class="agent-card elastic-card" id="card-elastic-agent">
+                    <div class="agent-card-header">
+                        <span class="agent-icon">&#x1F50D;</span>
+                        <h3>Elastic Agent</h3>
+                        <span class="agent-status" id="status-elastic-agent">idle</span>
+                    </div>
+                    <div class="agent-card-body" id="activity-elastic-agent">
+                        <p class="placeholder-text">Waiting for activity...</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Plan + Timeline side-by-side -->
+            <div class="dashboard-body">
+
+                <!-- Research Plan (sticky sidebar — always visible) -->
+                <section id="planCard" class="plan-card">
+                    <div class="plan-header">
+                        <span class="plan-icon">&#x1F4CB;</span>
+                        <h2>Research Plan</h2>
+                        <span id="planProgress" class="plan-progress"></span>
+                    </div>
+                    <ul id="todoList" class="todo-list">
+                        <li class="todo-placeholder">Waiting for orchestrator to create a plan...</li>
+                    </ul>
+                </section>
+
+                <!-- Activity Timeline -->
+                <section class="timeline-section">
+                    <div class="timeline-header">
+                        <h2>Activity Timeline</h2>
+                        <span id="eventCounter" class="event-counter">0 events</span>
+                    </div>
+                    <div id="timeline" class="timeline">
+                        <div class="timeline-empty">
+                            <p>Events will appear here as the agent works...</p>
+                        </div>
+                    </div>
+                </section>
+
+            </div>
+        </div>
+
+        <!-- Result Section (shown on completion) -->
+        <section id="resultSection" class="result-section hidden">
+            <div class="result-card">
+                <div class="result-icon">&#x2705;</div>
+                <h2>Research Complete</h2>
+                <p id="resultSummary"></p>
+                <a id="reportLink" href="#" class="report-link" target="_blank">
+                    <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                        <polyline points="14 2 14 8 20 8"/>
+                        <line x1="16" y1="13" x2="8" y2="13"/>
+                        <line x1="16" y1="17" x2="8" y2="17"/>
+                        <polyline points="10 9 9 9 8 9"/>
+                    </svg>
+                    View Full Report
+                </a>
+            </div>
+        </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

@@ -89,9 +89,20 @@ def calculate_viability_score(
     try:
         risk_flags = []
 
-        # Handle case where metrics might be nested or flat
+        # Handle case where inputs might be None or nested
+        if not isinstance(metrics, dict):
+            logger.warning(f"metrics parameter is not a dict: {type(metrics)}")
+        if not isinstance(sentiment, dict):
+            logger.warning(f"sentiment parameter is not a dict: {type(sentiment)}")
+        if not isinstance(adoption, dict):
+            logger.warning(f"adoption parameter is not a dict: {type(adoption)}")
+
         metrics_data = metrics.get("metrics", metrics) if isinstance(metrics, dict) else {}
+        metrics_data = metrics_data if isinstance(metrics_data, dict) else {}
         derived_data = metrics.get("derived", {}) if isinstance(metrics, dict) else {}
+        derived_data = derived_data if isinstance(derived_data, dict) else {}
+        sentiment = sentiment if isinstance(sentiment, dict) else {}
+        adoption = adoption if isinstance(adoption, dict) else {}
 
         logger.debug(f"Parsed metrics_data: {metrics_data}")
         logger.debug(f"Parsed derived_data: {derived_data}")

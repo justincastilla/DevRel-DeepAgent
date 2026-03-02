@@ -590,10 +590,10 @@ def fetch_repo_metrics(owner: str, repo: str, cache_hours: int = 24) -> dict:
             {
                 "date": date_str,
                 "parsed_date": parse_github_datetime(date_str),
-                "author": edge["node"]
-                .get("author", {})
-                .get("user", {})
-                .get("login", "unknown"),
+                "author": (
+                    (edge["node"].get("author") or {})
+                    .get("user") or {}
+                ).get("login", "unknown"),
             }
         )
 

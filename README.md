@@ -384,8 +384,15 @@ DeepDevRel/
 │   ├── test_agent.py             # Agent testing
 │   └── test_elastic_agent_tools.py # ES|QL tools test suite
 │
+├── web_app.py                    # FastAPI web UI server
 ├── elastic_agent_tools.md        # ES|QL tool definitions for Dev Tools
 ├── research_reports/             # Generated markdown reports
+├── static/                       # Web UI assets
+│   ├── index.html                # Dashboard page
+│   ├── styles.css                # Dashboard styles
+│   └── app.js                    # WebSocket client
+├── templates/
+│   └── report.html               # Rendered report template
 └── CLAUDE.md                     # Claude Code instructions
 ```
 
@@ -435,6 +442,72 @@ python scripts/setup_elasticsearch.py
 ### 4. Create ES|QL tools in Kibana Dev Tools
 
 Copy commands from `elastic_agent_tools.md` into Kibana Dev Tools to create the 16 ES|QL tools in the Agent Builder.
+
+---
+
+## Web UI
+
+The project includes a browser-based dashboard that lets you run research queries and watch the agent work in real time — no terminal required.
+
+### Starting the server
+
+```bash
+uvicorn web_app:app --reload --port 8000
+```
+
+Or run it directly:
+
+```bash
+python web_app.py
+```
+
+Then open **http://localhost:8000** in your browser.
+
+### What you'll see
+
+The dashboard has three main areas:
+
+**Query bar (top)**
+- Type any research question in natural language, the same queries you'd use with the CLI
+- Select a model: **Claude** (Claude Sonnet 4.5, default) or **GPT** (GPT-5)
+- Press **Research** or use `Ctrl+Enter` / `Cmd+Enter` to submit
+
+**Phase progress bar**
+Shows which stage the agent is currently in:
+`Initialize → Check Cache → Metrics → Sentiment → Web Research → Scoring → Save Report`
+
+**Agent activity cards**
+Five cards update live as each agent works:
+- **Orchestrator** — coordinates the overall research plan
+- **Metrics Agent** — fetches GitHub stars, commits, contributors, etc.
+- **Sentiment Agent** — analyzes issues and community discussions
+- **Web Research Agent** — searches for blog posts, case studies, job postings
+- **Elastic Agent** — queries Elasticsearch for cached data and historical trends
+
+**Activity timeline**
+A chronological log of every tool call, including the tool name, parameters, and result summary. Elastic Agent calls are highlighted and show the underlying ES|QL tool ID.
+
+### When research finishes
+
+A **View Full Report** button appears that opens the rendered markdown report in a new tab. Reports are also saved automatically to `research_reports/`.
+
+### Example queries
+
+```
+Compare crewAIInc/crewAI and microsoft/autogen for multi-agent orchestration
+Evaluate langchain-ai/langgraph for building research agents
+Discover the best Python web frameworks for async APIs
+What are the most adopted LLM observability tools?
+```
+
+### Troubleshooting
+
+| Symptom | Fix |
+|---------|-----|
+| "Failed to initialize agent" on submit | Check that all required API keys are set in `.env` |
+| Connection status stays "Disconnected" | Ensure the uvicorn server is running and the port is not blocked |
+| Report generated but no View Report button | The agent finished but produced no output — try `--verbose` via CLI to debug |
+| Model dropdown only shows Claude | GPT requires an OpenAI API key configured in `.env` |
 
 ---
 

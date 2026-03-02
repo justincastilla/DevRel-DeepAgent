@@ -39,6 +39,7 @@ class Config:
 
     # LLM Provider
     ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+    ANTHROPIC_FOUNDRY_RESOURCE = os.getenv("ANTHROPIC_FOUNDRY_RESOURCE")
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
     # Web Search
@@ -63,6 +64,10 @@ class Config:
     # Agent Configuration
     MAX_CONCURRENT_SUBAGENTS = 3
     MAX_ITERATIONS_PER_SUBAGENT = 5
+    # LangGraph recursion limit: each subagent tool call + orchestrator step
+    # counts toward this. 4 subagents × ~10 steps + orchestrator overhead = ~60
+    # for a single eval; comparisons of 3 repos can hit ~100+.
+    RECURSION_LIMIT = 100
 
     # Logging
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
@@ -127,6 +132,7 @@ class Config:
             "KIBANA_API_KEY": cls.mask_value(cls.KIBANA_API_KEY),
             "LANGSMITH_API_KEY": cls.mask_value(cls.LANGSMITH_API_KEY),
             # Non-sensitive values (shown in full)
+            "ANTHROPIC_FOUNDRY_RESOURCE": cls.ANTHROPIC_FOUNDRY_RESOURCE or "[NOT SET]",
             "ELASTICSEARCH_URL": cls.ELASTICSEARCH_URL or "[NOT SET]",
             "KIBANA_URL": cls.KIBANA_URL or "[NOT SET]",
             "LANGCHAIN_PROJECT": cls.LANGCHAIN_PROJECT,
