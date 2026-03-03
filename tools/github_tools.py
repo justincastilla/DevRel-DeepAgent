@@ -11,15 +11,18 @@ import httpx
 from langchain_core.tools import tool
 
 from config import config
-from exceptions import GitHubAPIError, RateLimitError
+from exceptions import GitHubAPIError, RateLimitError, RepositoryNotFoundError
 from utils.logging_utils import get_logger
 from utils.retry_utils import with_retry
 from tools.elasticsearch_tools import (
     get_cached_github_metrics,
     store_github_metrics_cache,
+    get_cached_github_data,
+    store_github_data_cache,
     store_timeseries_snapshot,
     store_commit_history,
 )
+from tools.web_tools import tavily_search
 
 logger = get_logger(__name__)
 
@@ -245,6 +248,29 @@ class RateLimiter:
                 "utilization": 1.0 - (self._tokens / self.max_calls_per_hour),
             }
 
+    def sync_from_api(self, remaining: int, reset_timestamp: int) -> None:
+        """
+        Sync the local token bucket with GitHub's actual rate limit headers.
+
+        Called after every successful GraphQL response to keep the local
+        bucket accurate instead of relying solely on our own counting.
+
+        Args:
+            remaining: Value of X-RateLimit-Remaining response header
+            reset_timestamp: Value of X-RateLimit-Reset header (Unix timestamp)
+        """
+        with self._lock:
+            new_tokens = float(min(remaining, self.max_calls_per_hour))
+            if new_tokens < self._tokens:
+                # API says we've used more than we tracked — sync down to be safe
+                logger.debug(
+                    f"Rate limiter synced from API headers: "
+                    f"{self._tokens:.0f} → {new_tokens:.0f} remaining "
+                    f"(reset at {reset_timestamp})"
+                )
+                self._tokens = new_tokens
+                self._last_refill = time.monotonic()
+
     def reset(self) -> None:
         """Reset the rate limiter to full capacity."""
         with self._lock:
@@ -350,8 +376,23 @@ def _execute_graphql(query: str, variables: dict) -> dict:
         response.raise_for_status()
         data = response.json()
 
+        # Sync rate limiter from actual API quota headers (more accurate than counting)
+        remaining_hdr = response.headers.get("X-RateLimit-Remaining")
+        reset_hdr = response.headers.get("X-RateLimit-Reset")
+        if remaining_hdr is not None and reset_hdr is not None:
+            try:
+                rate_limiter.sync_from_api(int(remaining_hdr), int(reset_hdr))
+            except (ValueError, TypeError):
+                pass
+
         if "errors" in data:
             error_msg = "; ".join([e.get("message", str(e)) for e in data["errors"]])
+            # "Not found" is permanent — raise immediately without retry
+            if any(
+                phrase in error_msg.lower()
+                for phrase in ("could not resolve to a repository", "not found", "does not exist")
+            ):
+                raise RepositoryNotFoundError(f"Repository not found: {error_msg}")
             raise GitHubAPIError(f"GraphQL errors: {error_msg}")
 
         return data
@@ -375,28 +416,24 @@ def _fetch_repo_metrics_from_web(owner: str, repo: str) -> dict:
         Dictionary with approximate metrics gathered from web sources
     """
     import re
-    from subagents.web_agent import tavily_search
 
     repo_full = f"{owner}/{repo}"
     github_url = f"https://github.com/{repo_full}"
 
     logger.info(f"Fetching metrics from web for {repo_full} (SAML fallback)")
 
-    # Search for repository statistics from multiple sources
-    search_queries = [
-        f"site:github.com/{owner}/{repo}",
-        f"{owner} {repo} GitHub stars forks contributors",
-        f"{repo} repository statistics open source",
-    ]
-
+    # Single composite query instead of 3 separate calls
+    composite_query = (
+        f"{owner}/{repo} GitHub repository stars forks contributors "
+        f"programming language open source"
+    )
     web_findings = []
-    for query in search_queries:
-        try:
-            results = tavily_search.invoke({"query": query, "max_results": 3})
-            if results and "results" in results:
-                web_findings.extend(results["results"])
-        except Exception as e:
-            logger.warning(f"Web search failed for '{query}': {e}")
+    try:
+        results = tavily_search.invoke({"query": composite_query, "max_results": 5})
+        if results and "results" in results:
+            web_findings.extend(results["results"])
+    except Exception as e:
+        logger.warning(f"Web search fallback failed for '{repo_full}': {e}")
 
     # Combine all text for parsing
     all_text = " ".join(
@@ -563,6 +600,13 @@ def fetch_repo_metrics(owner: str, repo: str, cache_hours: int = 24) -> dict:
 
     try:
         result = _execute_graphql(query, {"owner": owner, "repo": repo})
+    except RepositoryNotFoundError as e:
+        logger.warning(f"Repository {repo_full} not found on GitHub: {e}")
+        return {
+            "repo": repo_full,
+            "error": f"Repository '{repo_full}' not found on GitHub. It may have been renamed, deleted, or the name is incorrect.",
+            "cached": False,
+        }
     except GitHubAPIError as e:
         # Check if this is a SAML enforcement error
         if "SAML" in str(e) or "organization" in str(e).lower():
@@ -686,23 +730,34 @@ def fetch_repo_metrics(owner: str, repo: str, cache_hours: int = 24) -> dict:
     store_commit_history(repo_full, commits)
 
     logger.info(f"Successfully fetched metrics for {repo_full}")
+    metrics["cached"] = False
     return metrics
 
 
 @tool
-def fetch_recent_issues(owner: str, repo: str, count: int = 20) -> list:
+def fetch_recent_issues(owner: str, repo: str, count: int = 20, cache_hours: int = 8) -> list:
     """
-    Fetch recent issues and discussions for sentiment analysis.
+    Fetch recent issues for sentiment analysis.
+    Results are cached for 8 hours to reduce GitHub API usage.
 
     Args:
         owner: Repository owner
         repo: Repository name
         count: Number of issues to fetch (default 20, max 100)
+        cache_hours: Use cached results if less than this many hours old (default 8)
 
     Returns:
         List of issues with title, body, labels, state, and timestamps
     """
-    logger.info(f"Fetching {count} recent issues for {owner}/{repo}")
+    repo_full = f"{owner}/{repo}"
+
+    # Check cache first
+    cached = get_cached_github_data(repo_full, "issues", max_age_hours=cache_hours)
+    if cached is not None:
+        logger.info(f"Using cached issues for {repo_full} ({len(cached)} items)")
+        return {"issues": cached, "count": len(cached), "cached": True}
+
+    logger.info(f"Fetching {count} recent issues for {repo_full}")
 
     query = """
     query($owner: String!, $repo: String!, $count: Int!) {
@@ -724,9 +779,14 @@ def fetch_recent_issues(owner: str, repo: str, count: int = 20) -> list:
     }
     """
 
-    result = _execute_graphql(
-        query, {"owner": owner, "repo": repo, "count": min(count, 100)}
-    )
+    try:
+        result = _execute_graphql(
+            query, {"owner": owner, "repo": repo, "count": min(count, 100)}
+        )
+    except RepositoryNotFoundError as e:
+        logger.warning(f"Repository {repo_full} not found when fetching issues: {e}")
+        return {"issues": [], "count": 0, "cached": False, "error": str(e)}
+
     issues_data = (
         result.get("data", {}).get("repository", {}).get("issues", {}).get("nodes", [])
     )
@@ -748,31 +808,42 @@ def fetch_recent_issues(owner: str, repo: str, count: int = 20) -> list:
                 "created_at": issue["createdAt"],
                 "closed_at": issue.get("closedAt"),
                 "time_to_close_days": time_to_close,
-                "author": issue.get("author", {}).get("login", "unknown"),
+                "author": (issue.get("author") or {}).get("login", "unknown"),
                 "labels": [l["name"] for l in issue.get("labels", {}).get("nodes", [])],
                 "comment_count": issue["comments"]["totalCount"],
                 "reaction_count": issue["reactions"]["totalCount"],
             }
         )
 
-    logger.info(f"Fetched {len(issues)} issues for {owner}/{repo}")
-    return issues
+    logger.info(f"Fetched {len(issues)} issues for {repo_full}")
+    store_github_data_cache(repo_full, "issues", issues)
+    return {"issues": issues, "count": len(issues), "cached": False}
 
 
 @tool
-def fetch_repo_discussions(owner: str, repo: str, count: int = 10) -> list:
+def fetch_repo_discussions(owner: str, repo: str, count: int = 10, cache_hours: int = 8) -> list:
     """
     Fetch recent GitHub Discussions for community sentiment analysis.
+    Results are cached for 8 hours to reduce GitHub API usage.
 
     Args:
         owner: Repository owner
         repo: Repository name
         count: Number of discussions to fetch
+        cache_hours: Use cached results if less than this many hours old (default 8)
 
     Returns:
         List of discussions with title, body, category, and engagement metrics
     """
-    logger.info(f"Fetching {count} discussions for {owner}/{repo}")
+    repo_full = f"{owner}/{repo}"
+
+    # Check cache first
+    cached = get_cached_github_data(repo_full, "discussions", max_age_hours=cache_hours)
+    if cached is not None:
+        logger.info(f"Using cached discussions for {repo_full} ({len(cached)} items)")
+        return {"discussions": cached, "count": len(cached), "cached": True}
+
+    logger.info(f"Fetching {count} discussions for {repo_full}")
 
     query = """
     query($owner: String!, $repo: String!, $count: Int!) {
@@ -810,7 +881,7 @@ def fetch_repo_discussions(owner: str, repo: str, count: int = 10) -> list:
                 "body": d.get("body", "")[:500],
                 "category": d.get("category", {}).get("name", "Unknown"),
                 "created_at": d["createdAt"],
-                "author": d.get("author", {}).get("login", "unknown"),
+                "author": (d.get("author") or {}).get("login", "unknown"),
                 "comment_count": d["comments"]["totalCount"],
                 "upvotes": d["upvoteCount"],
                 "has_answer": d.get("answerChosenAt") is not None,
@@ -818,14 +889,16 @@ def fetch_repo_discussions(owner: str, repo: str, count: int = 10) -> list:
             for d in discussions
         ]
 
-        logger.info(
-            f"Fetched {len(formatted_discussions)} discussions for {owner}/{repo}"
-        )
-        return formatted_discussions
+        logger.info(f"Fetched {len(formatted_discussions)} discussions for {repo_full}")
+        store_github_data_cache(repo_full, "discussions", formatted_discussions)
+        return {"discussions": formatted_discussions, "count": len(formatted_discussions), "cached": False}
+    except RepositoryNotFoundError as e:
+        logger.warning(f"Repository {repo_full} not found when fetching discussions: {e}")
+        return {"discussions": [], "count": 0, "cached": False, "error": str(e)}
     except GitHubAPIError as e:
         # Discussions might not be enabled for repo
-        logger.warning(f"Could not fetch discussions for {owner}/{repo}: {e}")
-        return []
+        logger.warning(f"Could not fetch discussions for {repo_full}: {e}")
+        return {"discussions": [], "count": 0, "cached": False}
 
 
 @tool
@@ -843,20 +916,15 @@ def fetch_repo_info_from_web(owner: str, repo: str) -> dict:
     Returns:
         Dictionary with repository information gathered from web sources
     """
-    from subagents.web_agent import tavily_search
-
     repo_full = f"{owner}/{repo}"
     github_url = f"https://github.com/{repo_full}"
 
     logger.info(f"Fetching repo info from web for {repo_full} (API fallback)")
 
-    # Search for repository information from multiple angles
-    search_queries = [
-        f"site:github.com {owner}/{repo} stars forks",
-        f"{owner} {repo} GitHub repository statistics",
-        f"{repo} open source project contributors commits",
-    ]
-
+    # Single composite query instead of 3 separate calls
+    composite_query = (
+        f"{owner}/{repo} GitHub repository stars forks contributors commits open source"
+    )
     results = {
         "repo": repo_full,
         "github_url": github_url,
@@ -866,13 +934,12 @@ def fetch_repo_info_from_web(owner: str, repo: str) -> dict:
         "web_findings": [],
     }
 
-    for query in search_queries:
-        try:
-            search_results = tavily_search.invoke({"query": query, "max_results": 5})
-            if search_results and "results" in search_results:
-                results["web_findings"].extend(search_results["results"])
-        except Exception as e:
-            logger.warning(f"Web search failed for query '{query}': {e}")
+    try:
+        search_results = tavily_search.invoke({"query": composite_query, "max_results": 8})
+        if search_results and "results" in search_results:
+            results["web_findings"].extend(search_results["results"])
+    except Exception as e:
+        logger.warning(f"Web search fallback failed for '{repo_full}': {e}")
 
     # Parse numbers from web findings if possible
     import re

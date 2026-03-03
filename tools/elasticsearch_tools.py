@@ -632,6 +632,86 @@ def store_github_metrics_cache(repo: str, metrics: dict, derived: dict = None) -
         logger.warning(f"Failed to cache GitHub metrics (continuing): {e}")
 
 
+def get_cached_github_data(
+    repo: str, data_type: str, max_age_hours: int = 8
+) -> Optional[list]:
+    """
+    Check if we have cached GitHub list data (issues or discussions) for a repo.
+
+    Uses a dedicated 'github-data-cache' index (separate from metrics cache)
+    to avoid mapping conflicts.
+
+    Args:
+        repo: Repository name (owner/repo)
+        data_type: 'issues' or 'discussions'
+        max_age_hours: Maximum cache age in hours (default 8)
+
+    Returns:
+        Cached list if found and fresh, None otherwise
+    """
+    import json
+
+    since = (datetime.utcnow() - timedelta(hours=max_age_hours)).isoformat()
+    try:
+        es = get_es_client()
+        result = es.search(
+            index="github-data-cache",
+            query={
+                "bool": {
+                    "must": [
+                        {"term": {"repo": repo}},
+                        {"term": {"data_type": data_type}},
+                        {"range": {"timestamp": {"gte": since}}},
+                    ]
+                }
+            },
+            sort=[{"timestamp": "desc"}],
+            size=1,
+        )
+
+        if result["hits"]["hits"]:
+            cached = result["hits"]["hits"][0]["_source"]
+            logger.info(
+                f"GitHub {data_type} cache HIT for {repo} "
+                f"(age: {cached['timestamp']})"
+            )
+            return json.loads(cached.get("json_data", "[]"))
+
+        logger.info(f"GitHub {data_type} cache MISS for {repo}")
+        return None
+    except Exception as e:
+        logger.warning(
+            f"GitHub {data_type} cache lookup failed (continuing without cache): {e}"
+        )
+        return None
+
+
+def store_github_data_cache(repo: str, data_type: str, data: list) -> None:
+    """
+    Store GitHub list data (issues or discussions) in cache.
+
+    Args:
+        repo: Repository name (owner/repo)
+        data_type: 'issues' or 'discussions'
+        data: List of items to cache
+    """
+    import json
+
+    try:
+        es = get_es_client()
+        doc = {
+            "repo": repo,
+            "data_type": data_type,
+            "timestamp": datetime.utcnow().isoformat(),
+            "json_data": json.dumps(data),
+            "count": len(data),
+        }
+        es.index(index="github-data-cache", document=doc)
+        logger.info(f"Cached {len(data)} {data_type} for {repo}")
+    except Exception as e:
+        logger.warning(f"Failed to cache GitHub {data_type} (continuing): {e}")
+
+
 # =============================================================================
 # TIME-SERIES STORAGE - Build historical data for trend visualization
 # =============================================================================
@@ -1107,3 +1187,72 @@ def get_all_discovered_repos() -> list:
     except Exception as e:
         logger.warning(f"Failed to get discovered repos: {e}")
         return []
+
+
+# =============================================================================
+# Cache Cleanup / Expiry
+# =============================================================================
+
+# TTLs for each cache index (in hours).  Matches the max_age values used in
+# the cache-read functions so a document that would be rejected by the reader
+# is also deleted from the index on the next cleanup pass.
+_CACHE_TTL_HOURS: dict[str, int] = {
+    "web-search-cache": 7 * 24,      # 7 days  — matches get_cached_search default
+    "github-metrics-cache": 24,       # 24 h    — matches get_cached_github_metrics default
+    "github-data-cache": 24,          # 24 h    — matches get_cached_github_data default
+}
+
+
+def cleanup_cache_index(index: str, timestamp_field: str, max_age_hours: int) -> int:
+    """
+    Delete stale documents from a single cache index.
+
+    Args:
+        index: Elasticsearch index name
+        timestamp_field: Name of the date field to check (e.g. "timestamp")
+        max_age_hours: Delete documents older than this many hours
+
+    Returns:
+        Number of documents deleted (0 on error or index not found)
+    """
+    cutoff = (datetime.utcnow() - timedelta(hours=max_age_hours)).isoformat()
+    try:
+        es = get_es_client()
+        resp = es.delete_by_query(
+            index=index,
+            query={"range": {timestamp_field: {"lt": cutoff}}},
+            refresh=True,
+            ignore_unavailable=True,  # silently skip if index doesn't exist yet
+        )
+        deleted = resp.get("deleted", 0)
+        if deleted:
+            logger.info(
+                f"Cache cleanup: removed {deleted} stale docs from '{index}' "
+                f"(older than {max_age_hours}h)"
+            )
+        return deleted
+    except Exception as e:
+        logger.warning(f"Cache cleanup failed for '{index}': {e}")
+        return 0
+
+
+def cleanup_all_caches() -> dict[str, int]:
+    """
+    Expire stale documents from all cache indices.
+
+    Called automatically at agent startup so indices stay bounded without
+    requiring Elasticsearch ILM or data-stream rollover configuration.
+
+    Returns:
+        Dict mapping index name → number of documents deleted
+    """
+    results: dict[str, int] = {}
+    for index, max_age_hours in _CACHE_TTL_HOURS.items():
+        results[index] = cleanup_cache_index(index, "timestamp", max_age_hours)
+
+    total = sum(results.values())
+    if total:
+        logger.info(f"Cache cleanup complete: {total} stale documents removed across {len(results)} indices")
+    else:
+        logger.info("Cache cleanup complete: all indices are within TTL")
+    return results

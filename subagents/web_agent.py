@@ -2,107 +2,10 @@
 Web Research SubAgent - Specialized agent for adoption research.
 """
 
-import os
-from tavily import TavilyClient
-from langchain_core.tools import tool
-
-from config import config
-from exceptions import SearchError
 from utils.logging_utils import get_logger
-from tools.elasticsearch_tools import (
-    get_cached_search,
-    store_search_cache,
-    store_adoption_signal,
-)
+from tools.web_tools import tavily_search, record_adoption_signal  # noqa: F401
 
 logger = get_logger(__name__)
-
-# Initialize Tavily client
-tavily_client = None
-if config.TAVILY_API_KEY:
-    tavily_client = TavilyClient(api_key=config.TAVILY_API_KEY)
-
-
-@tool
-def tavily_search(query: str, max_results: int = 10, cache_days: int = 7) -> dict:
-    """
-    Search the web for information using Tavily API.
-    Optimized for finding technical content about frameworks and libraries.
-    Results are cached to reduce API costs.
-
-    Args:
-        query: Search query
-        max_results: Maximum results to return
-        cache_days: Use cached results if less than this many days old (default 7)
-
-    Returns:
-        Search results with title, url, and content snippet
-    """
-    # Check cache first
-    cached = get_cached_search(query, max_age_days=cache_days)
-    if cached:
-        logger.info(f"Using cached results for: {query}")
-        return cached
-
-    if not tavily_client:
-        raise SearchError("Tavily API key not configured")
-
-    logger.info(f"Searching Tavily for: {query}")
-
-    try:
-        results = tavily_client.search(
-            query=query,
-            max_results=max_results,
-            search_depth="advanced",
-            include_answer=True,
-        )
-        logger.info(f"Found {len(results.get('results', []))} results for query: {query}")
-
-        # Cache the results
-        store_search_cache(query, results, search_type="tavily")
-
-        return results
-    except Exception as e:
-        logger.error(f"Tavily search failed: {e}")
-        raise SearchError(f"Tavily search failed: {e}") from e
-
-
-@tool
-def record_adoption_signal(
-    repo: str,
-    signal_type: str,
-    source_url: str,
-    source_title: str,
-    snippet: str = "",
-    company_mentioned: str = None,
-    sentiment: str = "neutral",
-) -> str:
-    """
-    Record an adoption signal found during web research.
-    Use this to save notable findings like case studies, blog posts, or talks.
-
-    Args:
-        repo: Repository name being researched (e.g., "langchain-ai/deepagents")
-        signal_type: Type of signal - one of: blog_post, case_study, conference_talk, job_posting, tutorial, criticism
-        source_url: URL of the source
-        source_title: Title of the article/post/talk
-        snippet: Relevant excerpt or description (optional)
-        company_mentioned: Company name if this is a case study (optional)
-        sentiment: positive, neutral, or negative (default: neutral)
-
-    Returns:
-        Confirmation message
-    """
-    store_adoption_signal(
-        repo=repo,
-        signal_type=signal_type,
-        source_url=source_url,
-        source_title=source_title,
-        snippet=snippet,
-        company_mentioned=company_mentioned,
-        sentiment=sentiment,
-    )
-    return f"Recorded {signal_type} signal: {source_title[:50]}..."
 
 
 web_subagent = {

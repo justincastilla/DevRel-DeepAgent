@@ -27,6 +27,11 @@ from .elasticsearch_tools import (
     store_search_cache,
     get_cached_github_metrics,
     store_github_metrics_cache,
+    get_cached_github_data,
+    store_github_data_cache,
+    # Cache cleanup
+    cleanup_all_caches,
+    cleanup_cache_index,
     # Time-series functions
     store_timeseries_snapshot,
     store_commit_history,
@@ -44,6 +49,7 @@ from .elasticsearch_tools import (
     get_all_discovered_repos,
 )
 from .scoring_tools import calculate_viability_score
+from .web_tools import tavily_search, record_adoption_signal
 
 # Elastic Agent tools (for elastic subagent)
 from .elastic_agent_client import (
@@ -73,6 +79,11 @@ __all__ = [
     "store_search_cache",
     "get_cached_github_metrics",
     "store_github_metrics_cache",
+    "get_cached_github_data",
+    "store_github_data_cache",
+    # Cache cleanup
+    "cleanup_all_caches",
+    "cleanup_cache_index",
     # Time-series functions
     "store_timeseries_snapshot",
     "store_commit_history",
@@ -90,6 +101,9 @@ __all__ = [
     "get_all_discovered_repos",
     # Scoring tools
     "calculate_viability_score",
+    # Web search tools
+    "tavily_search",
+    "record_adoption_signal",
     # Elastic Agent client & tools
     "ElasticAgentClient",
     "ElasticAgentError",

@@ -47,7 +47,14 @@ class ElasticAgentClient:
             "Content-Type": "application/json",
         }
 
-        self._client = httpx.Client(timeout=60.0)
+        self._client = httpx.Client(
+            timeout=60.0,
+            limits=httpx.Limits(
+                max_keepalive_connections=5,
+                max_connections=10,
+                keepalive_expiry=30.0,
+            ),
+        )
         logger.info(f"Elastic Agent Client initialized with Kibana URL: {self.kibana_url}")
 
     def _derive_kibana_url(self) -> Optional[str]:

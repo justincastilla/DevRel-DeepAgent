@@ -208,8 +208,16 @@ function renderToolStart(msg) {
     return html;
 }
 
+function renderCacheBadge(cacheHit) {
+    if (cacheHit === null || cacheHit === undefined) return "";
+    return cacheHit
+        ? `<span class="cache-badge cache-hit">cache hit</span>`
+        : `<span class="cache-badge cache-miss">cache miss</span>`;
+}
+
 function renderToolEnd(msg) {
     let html = `<span class="event-tool">${escapeHtml(msg.tool)}</span>`;
+    html += renderCacheBadge(msg.cache_hit);
 
     if (msg.output_summary) {
         const isError = msg.output_summary.startsWith("Error:");
@@ -390,6 +398,7 @@ function renderToolStartCard(msg) {
 
 function renderToolEndCard(msg) {
     let html = `<span class="tool-name">${escapeHtml(msg.tool)}</span>`;
+    html += renderCacheBadge(msg.cache_hit);
 
     if (msg.output_summary) {
         if (msg.output_summary.startsWith("Error:")) {

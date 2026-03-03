@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Optional
 
 import markdown
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -22,6 +24,7 @@ from jinja2 import Environment, FileSystemLoader
 from agent import get_agent, MODELS, DEFAULT_MODEL
 from config import config
 from cli import save_report_to_file
+from tools.elasticsearch_tools import cleanup_all_caches
 from utils.logging_utils import setup_logging, get_logger
 
 # Setup logging
@@ -42,8 +45,20 @@ REPORTS_DIR.mkdir(exist_ok=True)
 # Jinja2 setup
 jinja_env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)))
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Run startup tasks before serving requests."""
+    logger.info("Server startup: running cache cleanup...")
+    try:
+        cleanup_all_caches()
+    except Exception as e:
+        # Don't block startup if Elasticsearch is unavailable
+        logger.warning(f"Cache cleanup skipped at startup: {e}")
+    yield
+
+
 # FastAPI app
-app = FastAPI(title="DevRel Research Agent", version="1.0.0")
+app = FastAPI(title="DevRel Research Agent", version="1.0.0", lifespan=lifespan)
 
 # Mount static files
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -359,14 +374,57 @@ async def websocket_research(websocket: WebSocket):
                         agent_name = identify_agent(event)
                         output = event_data.get("output", "")
 
+                        # LangGraph may deliver output as:
+                        #   (a) a raw dict from the @tool function
+                        #   (b) a JSON string serialization of that dict
+                        #   (c) a ToolMessage/BaseMessage object with a .content attribute
+                        # Normalize to a dict wherever possible so field checks work.
+                        if isinstance(output, str):
+                            try:
+                                parsed = json.loads(output)
+                                if isinstance(parsed, dict):
+                                    output = parsed
+                            except (json.JSONDecodeError, ValueError):
+                                pass
+                        elif hasattr(output, "content"):
+                            # ToolMessage or similar — content is typically a JSON string
+                            raw_content = output.content
+                            if isinstance(raw_content, str):
+                                try:
+                                    parsed = json.loads(raw_content)
+                                    if isinstance(parsed, dict):
+                                        output = parsed
+                                except (json.JSONDecodeError, ValueError):
+                                    pass
+
+                        # Detect cache status from tool output.
+                        # - GitHub/web tools: explicit "cached" boolean field
+                        # - Elastic ES|QL tools: infer from whether "results" is populated
+                        cache_hit = None
+                        if isinstance(output, dict):
+                            if "cached" in output:
+                                cache_hit = bool(output["cached"])
+                            elif event_name in ELASTIC_TOOL_NAMES and "results" in output:
+                                # ES|QL tools: a result with data = hit, empty = miss
+                                results = output.get("results", [])
+                                cache_hit = isinstance(results, list) and len(results) > 0
+
                         # Summarize the output
                         output_summary = ""
                         if isinstance(output, dict):
                             if "error" in output:
                                 output_summary = f"Error: {output['error']}"
+                            elif "issues" in output:
+                                count = output.get("count", len(output["issues"]))
+                                output_summary = f"{count} issues"
+                            elif "discussions" in output:
+                                count = output.get("count", len(output["discussions"]))
+                                output_summary = f"{count} discussions"
                             elif "results" in output:
                                 count = len(output["results"]) if isinstance(output["results"], list) else 0
-                                output_summary = f"{count} results returned"
+                                output_summary = f"{count} results" if count != 1 else "1 result"
+                            elif "metrics" in output:
+                                output_summary = "metrics fetched"
                             else:
                                 output_summary = f"Response with {len(output)} fields"
                         elif isinstance(output, str):
@@ -382,6 +440,7 @@ async def websocket_research(websocket: WebSocket):
                             "agent": agent_name,
                             "tool": event_name,
                             "output_summary": output_summary,
+                            "cache_hit": cache_hit,
                             "is_elastic_tool": event_name in ELASTIC_TOOL_NAMES,
                             "timestamp": datetime.now(timezone.utc).isoformat(),
                         }

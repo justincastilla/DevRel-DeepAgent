@@ -13,6 +13,15 @@ class GitHubAPIError(DevRelResearchError):
     pass
 
 
+class RepositoryNotFoundError(DevRelResearchError):
+    """Raised when a GitHub repository does not exist or is inaccessible.
+
+    Intentionally NOT a subclass of GitHubAPIError so it bypasses retry logic —
+    a missing repo is permanent, not transient.
+    """
+    pass
+
+
 class RateLimitError(DevRelResearchError):
     """Raised when API rate limits are exceeded."""
 

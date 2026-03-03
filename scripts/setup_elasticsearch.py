@@ -103,6 +103,17 @@ INDICES = {
             }
         },
     },
+    "github-data-cache": {
+        "mappings": {
+            "properties": {
+                "repo": {"type": "keyword"},
+                "data_type": {"type": "keyword"},  # "issues" or "discussions"
+                "timestamp": {"type": "date"},
+                "json_data": {"type": "object", "enabled": False},  # Raw JSON, not indexed
+                "count": {"type": "integer"},
+            }
+        },
+    },
     "repo-timeseries": {
         "mappings": {
             "properties": {
