@@ -17,7 +17,7 @@ setup_logging()
 logger = get_logger(__name__)
 
 # Load environment variables
-load_dotenv()
+load_dotenv(override=True)
 
 # =============================================================================
 # Lazy Agent Initialization (Singleton Pattern)
@@ -31,7 +31,7 @@ _current_model = None
 # Model configurations
 MODELS = {
     "claude": "anthropic:claude-sonnet-4-5-20250929",
-    "gpt": "openai:gpt-5",
+    "gpt": "azure:gpt-5.4",
 }
 DEFAULT_MODEL = "claude"
 
@@ -107,15 +107,11 @@ def get_agent(model: str = None):
             elastic_subagent,
         )
         from tools import (
-            find_similar_technologies,
-            compare_technologies,
-            get_trend_data,
-            search_by_tags,
             calculate_viability_score,
             store_research_report,
         )
 
-        # Build the model - use AnthropicFoundry client for Azure-hosted models
+        # Build the model - use provider-specific clients for Azure-hosted models
         if model_key == "claude" and config.ANTHROPIC_FOUNDRY_RESOURCE:
             from langchain_anthropic import ChatAnthropic
             from anthropic import AnthropicFoundry, AsyncAnthropicFoundry
@@ -148,6 +144,16 @@ def get_agent(model: str = None):
                 anthropic_api_key=config.ANTHROPIC_API_KEY,
                 max_tokens=20000,
             )
+        elif model_key == "gpt" and config.AZURE_OPENAI_API_KEY:
+            from langchain_openai import ChatOpenAI
+
+            model_instance = ChatOpenAI(
+                base_url=config.AZURE_OPENAI_ENDPOINT,
+                api_key=config.AZURE_OPENAI_API_KEY,
+                model="gpt-5.4",
+                max_tokens=None,
+                model_kwargs={"max_completion_tokens": 16000},
+            )
         else:
             model_instance = model_string
 
@@ -170,11 +176,6 @@ def get_agent(model: str = None):
             model=model_instance,
             system_prompt=system_prompt,
             tools=[
-                # Elasticsearch tools for the orchestrator
-                find_similar_technologies,
-                compare_technologies,
-                get_trend_data,
-                search_by_tags,
                 # Scoring tool
                 calculate_viability_score,
                 # Storage tool - save final reports

@@ -9,12 +9,13 @@ from typing import Optional
 from dotenv import load_dotenv
 
 # Load environment variables
-load_dotenv()
+load_dotenv(override=True)
 
 # Keys that should never be logged in plain text
 _SENSITIVE_KEYS = {
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
+    "AZURE_OPENAI_API_KEY",
     "TAVILY_API_KEY",
     "GITHUB_TOKEN",
     "GITHUB_API_KEY",
@@ -41,6 +42,9 @@ class Config:
     ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
     ANTHROPIC_FOUNDRY_RESOURCE = os.getenv("ANTHROPIC_FOUNDRY_RESOURCE")
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+    AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
+    AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
+    AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01")
 
     # Web Search
     TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
@@ -55,6 +59,7 @@ class Config:
     # Kibana (for Elastic Agent Builder)
     KIBANA_URL = os.getenv("KIBANA_URL")  # Optional - derived from ELASTICSEARCH_HOST if not set
     KIBANA_API_KEY = os.getenv("KIBANA_API_KEY")  # Optional - uses ELASTICSEARCH_API_KEY if not set
+    ELASTIC_AGENT_ID = os.getenv("ELASTIC_AGENT_ID")  # Agent ID for /converse endpoint
 
     # Observability
     LANGSMITH_API_KEY = os.getenv("LANGSMITH_API_KEY")
@@ -67,7 +72,8 @@ class Config:
     # LangGraph recursion limit: each subagent tool call + orchestrator step
     # counts toward this. 4 subagents × ~10 steps + orchestrator overhead = ~60
     # for a single eval; comparisons of 3 repos can hit ~100+.
-    RECURSION_LIMIT = 100
+    # GPT models take more steps than Claude, so they need a higher limit.
+    RECURSION_LIMIT = int(os.getenv("RECURSION_LIMIT", "150"))
 
     # Logging
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")

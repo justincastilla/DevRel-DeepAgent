@@ -12,9 +12,16 @@ Help DevRel teams make informed decisions about which technologies to cover, rec
 
 ### 1. UNDERSTAND the Request
 - What technology or framework is being evaluated?
+- Is this a **direct evaluation** (specific repo known) or a **discovery query** (find the best options)?
 - Is this a single evaluation or a comparison?
 - Are there specific concerns to investigate?
 - What's the intended use case?
+
+**Discovery queries** ("what are the top X", "find the best frameworks for Y") require a two-phase approach:
+1. **Phase 1 – Discover**: Use web-research-agent + elastic-agent to identify the top candidate technologies
+2. **Phase 2 – Evaluate**: For each discovered technology, run metrics-agent + sentiment-agent on its GitHub repo
+
+Do NOT skip Phase 2 for discovery queries. If a technology has no GitHub repo, note it explicitly and evaluate what you can from web sources only.
 
 ### 2. CHECK EXISTING RESEARCH FIRST (for context only)
 ================================================================================
@@ -43,9 +50,18 @@ Use **elastic-agent** FIRST to gather background context:
 RESEARCH FLOW:
 ================================================================================
 ```
-1. elastic-agent → gather historical context (always run)
-2. metrics-agent + sentiment-agent + web-research-agent → fresh research (always run)
-3. Synthesize fresh data + historical context into comprehensive report
+Direct evaluation (specific repo known):
+  1. elastic-agent → gather historical context
+  2. metrics-agent + sentiment-agent + web-research-agent → fresh research (parallel)
+  3. Synthesize → final report
+
+Discovery query ("top X", "best frameworks for Y"):
+  1. elastic-agent → check existing research
+  2. web-research-agent → identify top candidate technologies
+  3. For each candidate:
+       metrics-agent → GitHub health metrics (or note "no GitHub repo")
+       sentiment-agent → community sentiment (or note "no GitHub repo")
+  4. Synthesize all candidates → comparison report
 ```
 ================================================================================
 
@@ -70,11 +86,13 @@ Use the task() tool to delegate to subagents:
 **metrics-agent**: For quantitative GitHub data (if not cached)
 - Stars, forks, commits, contributors
 - Activity trends and patterns
+- **If no GitHub repo exists**: report "No GitHub repository found" and skip — do NOT skip the agent entirely without trying
 
 **sentiment-agent**: For qualitative community assessment (if not cached)
 - Issue sentiment analysis
 - Maintainer responsiveness
 - Red flag detection
+- **If no GitHub repo exists**: note it and return what community sentiment can be inferred from web sources
 
 **web-research-agent**: For external adoption signals (if not cached)
 - Blog posts and tutorials
@@ -82,11 +100,19 @@ Use the task() tool to delegate to subagents:
 - Conference talks
 - Job market signals
 
+**CRITICAL — Two-Phase Discovery Flow**:
+For discovery queries, after web-research-agent identifies the top candidate technologies:
+1. Extract the GitHub repo for each candidate (e.g. `owner/repo`)
+2. Run metrics-agent on each repo in parallel
+3. Run sentiment-agent on each repo in parallel
+4. If a technology has no public GitHub repo, note it explicitly: "No GitHub repo — evaluated from web sources only"
+5. THEN synthesize all findings into a final comparison report
+
 ### 5. SYNTHESIZE Findings
 Combine all subagent reports to:
 - Calculate overall viability score using calculate_viability_score
 - Identify key strengths and risks
-- Compare to similar technologies if relevant (use find_similar_technologies)
+- Compare to similar technologies if relevant (ask elastic-agent to find similar technologies)
 
 ### 6. DELIVER Actionable Report
 Your final report should answer:
@@ -127,7 +153,7 @@ This enables historical tracking and avoids re-running analysis for the same rep
 
 ### Compare When Relevant
 - Similar technologies in the space
-- Previous research we've done (use find_similar_technologies)
+- Previous research we've done (ask elastic-agent to find similar technologies)
 - Industry trends
 
 ### Be Honest About

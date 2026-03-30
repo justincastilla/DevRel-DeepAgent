@@ -5,33 +5,38 @@ This module provides a client for calling ES|QL tools created in the
 Elastic Agent Builder via the Kibana API.
 """
 
-import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
 from dotenv import load_dotenv
 
+from config import config
 from utils.logging_utils import get_logger
 
 # Load environment variables
-load_dotenv()
+load_dotenv(override=True)
 
 logger = get_logger(__name__)
 
 
 class ElasticAgentClient:
     """
-    Client for invoking ES|QL tools on the Elastic serverless agent.
+    Client for the Elastic Agent Builder.
 
-    This client communicates with the Kibana Agent Builder API to execute
-    ES|QL queries through pre-defined tools.
+    Supports two interaction modes:
+    - chat()       — POST /api/agent_builder/converse  (preferred)
+                     Sends a natural-language message; the agent picks and runs
+                     its own tools and returns a complete response.
+    - invoke_tool() — POST /api/agent_builder/tools/_execute  (legacy/direct)
+                     Bypasses the agent and calls a specific ES|QL tool by ID.
     """
 
     def __init__(self):
         """Initialize the Elastic Agent client."""
-        self.kibana_url = os.getenv("KIBANA_URL") or self._derive_kibana_url()
-        self.api_key = os.getenv("KIBANA_API_KEY") or os.getenv("ELASTICSEARCH_API_KEY")
+        self.kibana_url = config.KIBANA_URL or self._derive_kibana_url()
+        self.api_key = config.KIBANA_API_KEY or config.ELASTICSEARCH_API_KEY
+        self.agent_id = config.ELASTIC_AGENT_ID
 
         if not self.kibana_url:
             raise ValueError("KIBANA_URL environment variable is required")
@@ -57,9 +62,69 @@ class ElasticAgentClient:
         )
         logger.info(f"Elastic Agent Client initialized with Kibana URL: {self.kibana_url}")
 
+    def chat(
+        self,
+        input: str,
+        conversation_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+    ) -> dict:
+        """
+        Send a natural-language message to the Elastic Agent and get a response.
+
+        Uses POST /api/agent_builder/converse — the agent selects and executes
+        its own tools internally, returning a complete synthesised answer.
+
+        Args:
+            input: Natural-language request (e.g. "Get latest snapshot for elastic/elasticsearch")
+            conversation_id: Optional — continue an existing conversation for multi-turn context
+            agent_id: Override the configured agent ID for this call
+
+        Returns:
+            Full response dict from the API, including at minimum:
+              - "response" (str): The agent's answer
+              - "conversation_id" (str): ID to continue the conversation
+
+        Raises:
+            ElasticAgentError: If the request fails or no agent_id is available
+        """
+        resolved_agent_id = agent_id or self.agent_id
+        if not resolved_agent_id:
+            raise ElasticAgentError(
+                "No agent_id configured. Set ELASTIC_AGENT_ID in your .env file."
+            )
+
+        url = f"{self.kibana_url}/api/agent_builder/converse"
+        payload: dict = {"input": input, "agent_id": resolved_agent_id}
+        if conversation_id:
+            payload["conversation_id"] = conversation_id
+
+        logger.info(f"[ELASTIC AGENT] chat → {input[:80]}{'...' if len(input) > 80 else ''}")
+
+        try:
+            response = self._client.post(url, headers=self.headers, json=payload)
+
+            if response.status_code == 200:
+                result = response.json()
+                preview = str(result.get("response", ""))[:60]
+                logger.info(f"[ELASTIC AGENT] response: {preview}{'...' if len(preview) == 60 else ''}")
+                return result
+            elif response.status_code == 404:
+                raise ElasticAgentError(
+                    f"Agent '{resolved_agent_id}' not found. Check ELASTIC_AGENT_ID."
+                )
+            else:
+                error_detail = response.json() if response.content else {}
+                raise ElasticAgentError(
+                    f"Chat request failed: HTTP {response.status_code} - {error_detail}"
+                )
+
+        except httpx.RequestError as e:
+            logger.error(f"Request error during agent chat: {e}")
+            raise ElasticAgentError(f"Request failed: {e}")
+
     def _derive_kibana_url(self) -> Optional[str]:
         """Derive Kibana URL from Elasticsearch host if possible."""
-        es_host = os.getenv("ELASTICSEARCH_HOST", "")
+        es_host = config.ELASTICSEARCH_URL or ""
         if es_host:
             # Common pattern: ES on port 9243, Kibana on port 5601
             # Or for cloud: same host, different path

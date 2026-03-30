@@ -25,7 +25,7 @@ flowchart TB
     end
 
     subgraph Orchestrator["Main Orchestrator Agent"]
-        Main[agent.py<br/>Claude Sonnet 4.5]
+        Main[agent.py<br/>Claude or GPT]
         MainTools[Orchestrator Tools]
     end
 

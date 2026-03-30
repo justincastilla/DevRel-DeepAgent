@@ -1,0 +1,159 @@
+name: DevRel GitHub Metrics Refresh
+description: |
+  Weekly refresh of GitHub metrics using native GitHub connector operations.
+
+  Data sources:
+    github.searchIssues × 4  →  open_issues, closed_issues, open_prs, merged_prs
+
+  Fields refreshed:
+    open_issues, closed_issues, open_prs, merged_prs
+    issue_close_rate and pr_merge_rate are computed by the Python app on read
+    (see tools/elasticsearch_tools.py get_cached_github_metrics)
+
+  Fields NOT refreshed (require ai.prompt structured output — blocked in Kibana):
+    stars, forks  (stored as 0; populated by Python agent on full evaluation)
+    commits_week, commits_month, unique_authors, stars_per_month (same)
+
+  TODO: Replace CONNECTOR_UUID with the UUID from
+    Kibana → Stack Management → Connectors → your GitHub connector → URL
+
+  TODO: Replace TIMESTAMP_VAR with the correct workflow timestamp variable.
+    Check Kibana YAML editor autocomplete — type "{{ trigger." or "{{ context."
+    Candidates: trigger.date, trigger.timestamp, context.timestamp
+
+  NOTE: github.searchIssues requires owner, repo, type. The "type" field
+  likely distinguishes "issue" from "pr". A "state" field may also exist
+  for open/closed filtering — verify in the step builder and update below.
+
+enabled: true
+tags:
+  - devrel
+  - github
+  - metrics
+  - refresh
+
+triggers:
+  - type: scheduled
+    with:
+      every: 7d
+
+steps:
+  # ── Step 1: Get all distinct repos we're tracking ────────────────────────────
+  - name: get_tracked_repos
+    type: elasticsearch.request
+    with:
+      method: POST
+      path: /technology-research/_search
+      body:
+        size: 0
+        aggs:
+          repos:
+            terms:
+              field: repo
+              size: 200
+
+  # ── Step 2: Refresh each repo ────────────────────────────────────────────────
+  - name: refresh_each_repo
+    type: foreach
+    foreach: "{{ steps.get_tracked_repos.output.aggregations.repos.buckets }}"
+    steps:
+
+      # foreach.item.key = "langchain-ai/langgraph"
+      # Liquid split: {{ foreach.item.key | split: '/' | first }} = "langchain-ai"
+      #               {{ foreach.item.key | split: '/' | last }}  = "langgraph"
+
+      # 2a–2d. Issue and PR counts via GitHub Search
+      # TODO: Verify the "type" field value — try "issue" / "pr"
+      # TODO: Add "state: open" / "state: closed" if that field exists in the schema
+      - name: count_open_issues
+        type: github.searchIssues
+        connector-id: "CONNECTOR_UUID"
+        with:
+          owner: "{{ foreach.item.key | split: '/' | first }}"
+          repo: "{{ foreach.item.key | split: '/' | last }}"
+          type: "issue"
+
+      - name: count_closed_issues
+        type: github.searchIssues
+        connector-id: "CONNECTOR_UUID"
+        with:
+          owner: "{{ foreach.item.key | split: '/' | first }}"
+          repo: "{{ foreach.item.key | split: '/' | last }}"
+          type: "issue"
+
+      - name: count_open_prs
+        type: github.searchIssues
+        connector-id: "CONNECTOR_UUID"
+        with:
+          owner: "{{ foreach.item.key | split: '/' | first }}"
+          repo: "{{ foreach.item.key | split: '/' | last }}"
+          type: "pr"
+
+      - name: count_merged_prs
+        type: github.searchIssues
+        connector-id: "CONNECTOR_UUID"
+        with:
+          owner: "{{ foreach.item.key | split: '/' | first }}"
+          repo: "{{ foreach.item.key | split: '/' | last }}"
+          type: "pr"
+
+      # 2e. Write to github-metrics-cache
+      # issue_close_rate and pr_merge_rate are computed by Python on read.
+      # stars/forks stored as 0 — populated by Python agent on full evaluation.
+      # TODO: Replace TIMESTAMP_VAR once the correct variable is confirmed.
+      - name: store_metrics_cache
+        type: elasticsearch.request
+        with:
+          method: POST
+          path: /github-metrics-cache/_doc
+          body:
+            repo: "{{ foreach.item.key }}"
+            timestamp: "{{ TIMESTAMP_VAR }}"
+            source: "workflow_refresh"
+            metrics:
+              stars: 0
+              forks: 0
+              open_issues: "{{ steps.count_open_issues.output.total_count }}"
+              closed_issues: "{{ steps.count_closed_issues.output.total_count }}"
+              open_prs: "{{ steps.count_open_prs.output.total_count }}"
+              merged_prs: "{{ steps.count_merged_prs.output.total_count }}"
+              contributors: 0
+            derived:
+              issue_close_rate: 0
+              pr_merge_rate: 0
+              commits_7d: 0
+              commits_30d: 0
+              commits_90d: 0
+              stars_per_month: 0
+              repo_age_days: 0
+
+      # 2f. Append to repo-timeseries for trend graphs
+      - name: store_timeseries
+        type: elasticsearch.request
+        with:
+          method: POST
+          path: /repo-timeseries/_doc
+          body:
+            repo: "{{ foreach.item.key }}"
+            timestamp: "{{ TIMESTAMP_VAR }}"
+            source: "workflow_refresh"
+            stars: 0
+            forks: 0
+            open_issues: "{{ steps.count_open_issues.output.total_count }}"
+            closed_issues: "{{ steps.count_closed_issues.output.total_count }}"
+            open_prs: "{{ steps.count_open_prs.output.total_count }}"
+            merged_prs: "{{ steps.count_merged_prs.output.total_count }}"
+            contributors: 0
+            commits_week: 0
+            commits_month: 0
+            unique_authors_week: 0
+            unique_authors_month: 0
+            issue_close_rate: 0
+            pr_merge_rate: 0
+            stars_per_month: 0
+
+  # ── Step 3: Log ───────────────────────────────────────────────────────────────
+  - name: log_summary
+    type: console
+    with:
+      message: "GitHub metrics refresh complete."

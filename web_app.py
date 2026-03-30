@@ -67,77 +67,34 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 # Elastic tool names for special handling
 # =============================================================================
 
-ELASTIC_TOOL_NAMES = {
-    "semantic_search_technologies",
-    "search_technologies_by_tags",
-    "get_repository_trends",
-    "get_repository_timeseries",
-    "get_repository_stats",
-    "get_latest_snapshot",
-    "get_adoption_signals",
-    "get_adoption_signals_by_type",
-    "count_adoption_signals",
-    "get_latest_research_report",
-    "get_cached_research_report",
-    "check_search_cache",
-    "check_github_metrics_cache",
-    "get_past_discoveries",
-    "search_discoveries_by_use_case",
-    "get_all_discovered_repositories",
-}
+# The single tool the elastic-agent subagent calls to reach the Elastic Agent Builder
+ELASTIC_TOOL_NAMES = {"ask_elastic_agent"}
 
-# Mapping from LangChain tool name to Elastic Agent Builder tool ID
-ELASTIC_TOOL_ID_MAP = {
-    "semantic_search_technologies": "find-similar-technologies",
-    "search_technologies_by_tags": "search-by-tags",
-    "get_repository_trends": "get-trend-data",
-    "get_repository_timeseries": "get-repo-timeseries",
-    "get_repository_stats": "get-repo-timeseries-stats",
-    "get_latest_snapshot": "get-latest-snapshot",
-    "get_adoption_signals": "get-adoption-signals",
-    "get_adoption_signals_by_type": "get-adoption-signals-by-type",
-    "count_adoption_signals": "count-adoption-signals",
-    "get_latest_research_report": "get-latest-report",
-    "get_cached_research_report": "get-cached-report",
-    "check_search_cache": "get-cached-search",
-    "check_github_metrics_cache": "get-cached-github-metrics",
-    "get_past_discoveries": "get-past-discoveries",
-    "search_discoveries_by_use_case": "search-discoveries-by-use-case",
-    "get_all_discovered_repositories": "get-all-discovered-repos",
-}
-
-# All orchestrator-level tool names
+# All orchestrator-level tool names (read-only ES tools were removed; only these remain)
 ORCHESTRATOR_TOOL_NAMES = {
-    "find_similar_technologies",
-    "compare_technologies",
-    "get_trend_data",
-    "search_by_tags",
     "calculate_viability_score",
     "store_research_report",
 }
 
-# Subagent tool mapping
+# Subagent tool mapping: tool name → which subagent owns it
 SUBAGENT_TOOL_MAP = {
-    # metrics-agent tools
+    # elastic-agent
+    "ask_elastic_agent": "elastic-agent",
+    # metrics-agent
     "fetch_repo_metrics": "metrics-agent",
-    # sentiment-agent tools
+    "store_research_snapshot": "metrics-agent",
+    # sentiment-agent
     "fetch_recent_issues": "sentiment-agent",
     "fetch_repo_discussions": "sentiment-agent",
-    # web-research-agent tools
+    # web-research-agent
     "tavily_search": "web-research-agent",
     "record_adoption_signal": "web-research-agent",
-    # store_research_snapshot is used by BOTH metrics and sentiment agents;
-    # identify by the tags from the surrounding chain instead (handled via on_chain_start)
 }
 
 # Phase detection based on tool names
 def detect_phase(tool_name: str, agent_name: str) -> str:
     """Detect the current research phase based on the tool being called."""
-    if tool_name in ELASTIC_TOOL_NAMES:
-        if "cache" in tool_name.lower() or "cached" in tool_name.lower():
-            return "checking_cache"
-        if "snapshot" in tool_name.lower() or "report" in tool_name.lower():
-            return "checking_cache"
+    if tool_name == "ask_elastic_agent":
         return "data_retrieval"
     if tool_name in ("fetch_repo_metrics", "store_research_snapshot"):
         return "fetching_metrics"
@@ -149,9 +106,6 @@ def detect_phase(tool_name: str, agent_name: str) -> str:
         return "scoring"
     if tool_name == "store_research_report":
         return "storing_report"
-    if tool_name in ("find_similar_technologies", "compare_technologies",
-                      "get_trend_data", "search_by_tags"):
-        return "data_retrieval"
     return "processing"
 
 
@@ -160,24 +114,23 @@ def identify_agent(event: dict) -> str:
     tags = event.get("tags", [])
     name = event.get("name", "")
 
-    # Check tags for subagent names
-    for tag in tags:
-        if "metrics" in tag.lower():
-            return "metrics-agent"
-        if "sentiment" in tag.lower():
-            return "sentiment-agent"
-        if "web" in tag.lower():
-            return "web-research-agent"
-        if "elastic" in tag.lower():
-            return "elastic-agent"
-
-    # Check tool name mapping
+    # Tool name is the most reliable signal — check first
     if name in SUBAGENT_TOOL_MAP:
         return SUBAGENT_TOOL_MAP[name]
-    if name in ELASTIC_TOOL_NAMES:
-        return "elastic-agent"
     if name in ORCHESTRATOR_TOOL_NAMES:
         return "orchestrator"
+
+    # Fall back to LangGraph tags injected by DeepAgents
+    for tag in tags:
+        tag_lower = tag.lower()
+        if "metrics" in tag_lower:
+            return "metrics-agent"
+        if "sentiment" in tag_lower:
+            return "sentiment-agent"
+        if "web" in tag_lower:
+            return "web-research-agent"
+        if "elastic" in tag_lower:
+            return "elastic-agent"
 
     return "orchestrator"
 
@@ -359,12 +312,6 @@ async def websocket_research(websocket: WebSocket):
                             "timestamp": datetime.now(timezone.utc).isoformat(),
                         }
 
-                        # Add Elastic-specific metadata
-                        if is_elastic:
-                            msg["elastic_tool_id"] = ELASTIC_TOOL_ID_MAP.get(
-                                event_name, event_name
-                            )
-
                 # --- Tool End ---
                 elif event_kind == "on_tool_end":
                     # Skip write_todos — the plan card already visualizes it
@@ -399,19 +346,33 @@ async def websocket_research(websocket: WebSocket):
 
                         # Detect cache status from tool output.
                         # - GitHub/web tools: explicit "cached" boolean field
-                        # - Elastic ES|QL tools: infer from whether "results" is populated
+                        # - ask_elastic_agent: infer from Status in response string
                         cache_hit = None
                         if isinstance(output, dict):
                             if "cached" in output:
                                 cache_hit = bool(output["cached"])
-                            elif event_name in ELASTIC_TOOL_NAMES and "results" in output:
-                                # ES|QL tools: a result with data = hit, empty = miss
-                                results = output.get("results", [])
-                                cache_hit = isinstance(results, list) and len(results) > 0
+                        elif event_name == "ask_elastic_agent" and isinstance(output, str):
+                            # Elastic agent returns structured text; FOUND = hit, NOT_FOUND = miss
+                            if "Status: FOUND" in output or "Status: PARTIAL" in output:
+                                cache_hit = True
+                            elif "Status: NOT_FOUND" in output:
+                                cache_hit = False
 
                         # Summarize the output
                         output_summary = ""
-                        if isinstance(output, dict):
+                        if event_name == "ask_elastic_agent" and isinstance(output, str):
+                            # Extract the ## Summary section if present, else truncate
+                            if "## Summary" in output:
+                                summary_start = output.index("## Summary") + len("## Summary")
+                                summary_text = output[summary_start:].strip()
+                                # Stop at next ## section
+                                next_section = summary_text.find("\n##")
+                                if next_section != -1:
+                                    summary_text = summary_text[:next_section].strip()
+                                output_summary = summary_text[:300] + ("..." if len(summary_text) > 300 else "")
+                            else:
+                                output_summary = output[:200] + ("..." if len(output) > 200 else "")
+                        elif isinstance(output, dict):
                             if "error" in output:
                                 output_summary = f"Error: {output['error']}"
                             elif "issues" in output:

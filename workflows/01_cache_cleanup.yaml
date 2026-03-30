@@ -1,0 +1,64 @@
+name: DevRel Cache Cleanup
+description: |
+  Deletes stale cache documents from all three cache indices daily.
+  TTLs match the Python app defaults in tools/elasticsearch_tools.py:
+    web-search-cache       7 days   (matches get_cached_search default)
+    github-metrics-cache   24 hours (matches get_cached_github_metrics default)
+    github-data-cache      24 hours (matches get_cached_github_data default)
+
+  Runs automatically so cleanup is no longer dependent on the Python app
+  being started. Replaces the startup-time cleanup_all_caches() call for
+  scheduled hygiene (the Python app still runs it on startup as a safety net).
+enabled: true
+tags:
+  - devrel
+  - maintenance
+  - cache
+
+triggers:
+  - type: scheduled
+    with:
+      every: 1d
+
+steps:
+  - name: cleanup_web_search_cache
+    type: elasticsearch.request
+    with:
+      method: POST
+      path: /web-search-cache/_delete_by_query?refresh=true&ignore_unavailable=true
+      body:
+        query:
+          range:
+            timestamp:
+              lt: now-7d/d
+
+  - name: cleanup_github_metrics_cache
+    type: elasticsearch.request
+    with:
+      method: POST
+      path: /github-metrics-cache/_delete_by_query?refresh=true&ignore_unavailable=true
+      body:
+        query:
+          range:
+            timestamp:
+              lt: now-24h
+
+  - name: cleanup_github_data_cache
+    type: elasticsearch.request
+    with:
+      method: POST
+      path: /github-data-cache/_delete_by_query?refresh=true&ignore_unavailable=true
+      body:
+        query:
+          range:
+            timestamp:
+              lt: now-24h
+
+  - name: log_results
+    type: console
+    with:
+      message: |
+        Cache cleanup complete.
+        web-search-cache:     {{ steps.cleanup_web_search_cache.output.deleted }} docs removed
+        github-metrics-cache: {{ steps.cleanup_github_metrics_cache.output.deleted }} docs removed
+        github-data-cache:    {{ steps.cleanup_github_data_cache.output.deleted }} docs removed

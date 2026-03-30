@@ -51,7 +51,7 @@ from .elasticsearch_tools import (
 from .scoring_tools import calculate_viability_score
 from .web_tools import tavily_search, record_adoption_signal
 
-# Elastic Agent tools (for elastic subagent)
+# Elastic Agent client & tools (for elastic subagent)
 from .elastic_agent_client import (
     ElasticAgentClient,
     ElasticAgentError,
@@ -59,7 +59,7 @@ from .elastic_agent_client import (
     days_ago_iso,
     hours_ago_iso,
 )
-from .elastic_subagent_tools import ELASTIC_SUBAGENT_TOOLS
+from .elastic_subagent_tools import ELASTIC_SUBAGENT_TOOLS, ask_elastic_agent
 
 __all__ = [
     # GitHub tools
@@ -111,4 +111,5 @@ __all__ = [
     "days_ago_iso",
     "hours_ago_iso",
     "ELASTIC_SUBAGENT_TOOLS",
+    "ask_elastic_agent",
 ]

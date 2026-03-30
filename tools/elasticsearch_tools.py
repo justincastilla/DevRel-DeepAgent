@@ -594,9 +594,28 @@ def get_cached_github_metrics(repo: str, max_age_hours: int = 24) -> Optional[di
         if result["hits"]["hits"]:
             cached = result["hits"]["hits"][0]["_source"]
             logger.info(f"GitHub cache HIT for {repo} (age: {cached['timestamp']})")
+            metrics = cached["metrics"]
+            derived = cached.get("derived", {})
+
+            # Workflow-refreshed cache entries store raw counts but not rates.
+            # Compute rates here so downstream scoring gets correct values.
+            if derived.get("issue_close_rate", 0) == 0:
+                open_i = metrics.get("open_issues", 0)
+                closed_i = metrics.get("closed_issues", 0)
+                total_i = open_i + closed_i
+                if total_i > 0:
+                    derived["issue_close_rate"] = round(closed_i / total_i * 100, 1)
+
+            if derived.get("pr_merge_rate", 0) == 0:
+                open_p = metrics.get("open_prs", 0)
+                merged_p = metrics.get("merged_prs", 0)
+                total_p = open_p + merged_p
+                if total_p > 0:
+                    derived["pr_merge_rate"] = round(merged_p / total_p * 100, 1)
+
             return {
-                "metrics": cached["metrics"],
-                "derived": cached.get("derived", {}),
+                "metrics": metrics,
+                "derived": derived,
                 "cached": True,
                 "cache_timestamp": cached["timestamp"],
             }
