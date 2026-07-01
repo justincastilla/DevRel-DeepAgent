@@ -29,9 +29,6 @@ from .elasticsearch_tools import (
     store_github_metrics_cache,
     get_cached_github_data,
     store_github_data_cache,
-    # Cache cleanup
-    cleanup_all_caches,
-    cleanup_cache_index,
     # Time-series functions
     store_timeseries_snapshot,
     store_commit_history,
@@ -81,9 +78,6 @@ __all__ = [
     "store_github_metrics_cache",
     "get_cached_github_data",
     "store_github_data_cache",
-    # Cache cleanup
-    "cleanup_all_caches",
-    "cleanup_cache_index",
     # Time-series functions
     "store_timeseries_snapshot",
     "store_commit_history",

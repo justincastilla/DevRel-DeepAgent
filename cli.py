@@ -9,7 +9,7 @@ import threading
 import time
 import re
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1104,7 +1104,7 @@ def export_result(content: str, output_path: str, format_type: str):
         elif format_type == "json":
             # Wrap content in JSON structure
             data = {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "content": content,
             }
             with open(output_path, "w") as f:

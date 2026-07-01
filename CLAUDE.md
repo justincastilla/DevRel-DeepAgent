@@ -12,6 +12,10 @@ DevRel Research Agent is a multi-agent system built on LangChain's DeepAgents fr
 # Install dependencies
 pip install -r requirements.txt
 
+# Start a local Redis instance for caching (either option works)
+redis-server                      # if Redis is installed locally, or
+docker compose up -d redis        # run just the Redis container
+
 # Setup Elasticsearch indices (required before first use)
 python scripts/setup_elasticsearch.py
 
@@ -99,7 +103,8 @@ ES|QL tools are defined in `elastic_agent_tools.md` and created via the Kibana D
 
 Tools in `tools/` are split by domain:
 - `github_tools.py` - GitHub API interactions (`fetch_repo_metrics`, `fetch_recent_issues`, `fetch_repo_discussions`)
-- `elasticsearch_tools.py` - Data persistence, caching, and querying (direct ES client)
+- `elasticsearch_tools.py` - Data persistence and querying (direct ES client); cache read/write helpers now delegate to Redis
+- `redis_cache.py` - Local Redis cache backend (`get_redis`, `cache_get`, `cache_set`)
 - `elastic_agent_client.py` - Client for invoking ES|QL tools on the Elastic serverless agent
 - `elastic_subagent_tools.py` - LangChain tools wrapping the Elastic agent client (16 tools)
 - `scoring_tools.py` - Viability scoring logic (`calculate_viability_score`)
@@ -132,10 +137,20 @@ stats = get_github_rate_limit_stats()     # Full usage statistics
 
 ### Data Storage
 
-**Elasticsearch Indices:**
+**Caching (Redis):**
+
+Short-lived caches live in a locally hosted Redis instance (`tools/redis_cache.py`).
+Redis expires stale entries automatically via TTL, so there is no cleanup job.
+Cache keys and TTLs (configured in `config.py`):
+- `websearch:<hash>` - Cached Tavily search results (`CACHE_TTL_WEB_SEARCH`, 7 days)
+- `ghmetrics:<owner/repo>` - Cached GitHub metrics (`CACHE_TTL_GITHUB_METRICS`, 24 hours)
+- `ghdata:<owner/repo>:<issues|discussions>` - Cached GitHub lists (`CACHE_TTL_GITHUB_DATA`, 8 hours)
+
+If Redis is unavailable the cache helpers degrade gracefully (reads act as a
+miss, writes are skipped) and the agent keeps working without a cache.
+
+**Elasticsearch Indices (durable, queryable data):**
 - `technology-research` - Main research snapshots with embeddings
-- `web-search-cache` - Cached Tavily search results (7-day TTL)
-- `github-metrics-cache` - Cached GitHub API responses (24-hour TTL)
 - `repo-timeseries` - Point-in-time metrics for trend graphs
 - `commit-history` - Weekly commit aggregates by author
 - `adoption-signals` - Structured web findings (case studies, blog posts)
@@ -144,11 +159,17 @@ stats = get_github_rate_limit_stats()     # Full usage statistics
 **File Output:**
 - `research_reports/` - Markdown reports saved automatically after each evaluation/comparison
 
+> Note: The optional Kibana `github_metrics_refresh` workflow still writes to a
+> `github-metrics-cache` ES index. Since the Python app now reads GitHub metrics
+> from Redis, those workflow writes are not consumed by the app; the agent
+> repopulates metrics on the next full evaluation.
+
 ### Configuration
 
 All configuration is managed through `config.py`, which loads from `.env`:
 - API keys: `ANTHROPIC_API_KEY`, `TAVILY_API_KEY`, `GITHUB_TOKEN`, `ELASTICSEARCH_API_KEY`
 - Elasticsearch: `ELASTICSEARCH_HOST`
+- Redis cache: `REDIS_HOST` (default `localhost`), `REDIS_PORT` (default `6379`), `REDIS_DB`, optional `REDIS_PASSWORD`; cache TTLs via `CACHE_TTL_WEB_SEARCH`, `CACHE_TTL_GITHUB_METRICS`, `CACHE_TTL_GITHUB_DATA`
 - Kibana/Elastic Agent: `KIBANA_URL` (optional - derived from ES host), `KIBANA_API_KEY` (optional - uses ES key)
 - Observability: `LANGSMITH_API_KEY`, `LANGCHAIN_PROJECT`
 
@@ -195,3 +216,4 @@ See `TODO.md` for the current improvement roadmap. Completed optimizations:
 - Rate limiting with token bucket algorithm
 - Lazy agent initialization (no import-time side effects)
 - Datetime parsing optimization (4.4x faster)
+- Redis-backed caching (native TTL expiry; O(1) lookups; singleton ES client)

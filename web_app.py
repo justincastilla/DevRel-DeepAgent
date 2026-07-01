@@ -24,7 +24,6 @@ from jinja2 import Environment, FileSystemLoader
 from agent import get_agent, MODELS, DEFAULT_MODEL
 from config import config
 from cli import save_report_to_file
-from tools.elasticsearch_tools import cleanup_all_caches
 from utils.logging_utils import setup_logging, get_logger
 
 # Setup logging
@@ -48,12 +47,8 @@ jinja_env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)))
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Run startup tasks before serving requests."""
-    logger.info("Server startup: running cache cleanup...")
-    try:
-        cleanup_all_caches()
-    except Exception as e:
-        # Don't block startup if Elasticsearch is unavailable
-        logger.warning(f"Cache cleanup skipped at startup: {e}")
+    # Cache cleanup is no longer needed here: caching lives in Redis, which
+    # expires stale entries automatically via TTL (see tools/redis_cache.py).
     yield
 
 

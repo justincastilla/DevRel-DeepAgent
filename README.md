@@ -336,6 +336,8 @@ erDiagram
     TECHNOLOGY_DISCOVERIES ||--o{ TECHNOLOGY_RESEARCH : "discovers"
 ```
 
+**Elasticsearch (durable, queryable data):**
+
 | Index | Purpose | TTL |
 |-------|---------|-----|
 | `technology-research` | Main research snapshots with embeddings | Permanent |
@@ -343,9 +345,15 @@ erDiagram
 | `adoption-signals` | Blog posts, case studies, job postings | Permanent |
 | `research-reports` | Final evaluation/comparison reports | Permanent |
 | `technology-discoveries` | Discovered technologies by use case | Permanent |
-| `web-search-cache` | Cached Tavily search results | 7 days |
-| `github-metrics-cache` | Cached GitHub API responses | 24 hours |
 | `commit-history` | Weekly commit aggregates by author | Permanent |
+
+**Redis (short-lived caches, expired automatically via TTL):**
+
+| Key pattern | Purpose | TTL |
+|-------------|---------|-----|
+| `websearch:<hash>` | Cached Tavily search results | 7 days |
+| `ghmetrics:<owner/repo>` | Cached GitHub metrics | 24 hours |
+| `ghdata:<owner/repo>:<type>` | Cached GitHub issues/discussions | 8 hours |
 
 ---
 

@@ -6,6 +6,7 @@ Get the DevRel Research Agent up and running in 5 minutes.
 
 - Python 3.12+
 - pip package manager
+- A local Redis instance (for caching) — install Redis, or use `docker compose up -d redis`
 - API keys (see below)
 
 ## Step 1: Install Dependencies
@@ -23,15 +24,24 @@ Your `.env` file should already contain the required API keys:
 - `GITHUB_API_KEY` - For GitHub API access
 - `ELASTICSEARCH_HOST` - Your Elasticsearch cluster URL
 - `ELASTICSEARCH_API_KEY` - Elasticsearch authentication
+- `REDIS_HOST` / `REDIS_PORT` - Local Redis cache (defaults: `localhost` / `6379`)
 - `LANGSMITH_API_KEY` - For observability (optional)
 
-## Step 3: Setup Elasticsearch Index
+## Step 3: Start Redis and Setup Elasticsearch Index
 
 ```bash
+# Start a local Redis for caching (either one)
+redis-server                  # if installed locally, or
+docker compose up -d redis    # run just the Redis container
+
+# Create the Elasticsearch indices
 python scripts/setup_elasticsearch.py
 ```
 
 When prompted, choose whether to create or recreate the index.
+Caching uses Redis (which expires entries automatically), so no cache indices
+or cleanup jobs are required. If Redis is down the agent still runs — it just
+skips the cache.
 
 ## Step 4: Run Your First Query
 

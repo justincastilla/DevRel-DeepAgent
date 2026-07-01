@@ -30,7 +30,10 @@ _API_KEY_PATTERNS = [
     re.compile(r"ghp_[a-zA-Z0-9]{36}"),  # GitHub PAT
     re.compile(r"gho_[a-zA-Z0-9]{36}"),  # GitHub OAuth
     re.compile(r"github_pat_[a-zA-Z0-9_]{22,}"),  # GitHub fine-grained PAT
-    re.compile(r"[a-zA-Z0-9+/]{40,}={0,2}"),  # Base64 encoded keys (40+ chars)
+    # Base64-style keys (e.g. Elasticsearch API keys). The lookarounds require
+    # the match to be a standalone token (not a slice of a longer word), which
+    # avoids mangling ordinary long strings like report text or IDs in logs.
+    re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{40,}={0,2}(?![A-Za-z0-9+/])"),
     re.compile(r"tvly-[a-zA-Z0-9]{20,}"),  # Tavily-style
 ]
 
@@ -55,6 +58,21 @@ class Config:
     # Elasticsearch
     ELASTICSEARCH_URL = os.getenv("ELASTICSEARCH_HOST")  # Using ELASTICSEARCH_HOST from .env
     ELASTICSEARCH_API_KEY = os.getenv("ELASTICSEARCH_API_KEY")
+
+    # Redis (local cache backend)
+    # Caching moved from Elasticsearch to a locally hosted Redis instance.
+    # Defaults point at a Redis running on the same machine / docker-compose.
+    REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+    REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+    REDIS_DB = int(os.getenv("REDIS_DB", "0"))
+    REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")  # optional; leave unset for local dev
+
+    # Cache time-to-live values, in seconds. Centralized here so the read
+    # window and the expiry window can never drift apart. Redis enforces these
+    # as native key expirations, so there is no separate cleanup job.
+    CACHE_TTL_WEB_SEARCH = int(os.getenv("CACHE_TTL_WEB_SEARCH", str(7 * 24 * 3600)))     # 7 days
+    CACHE_TTL_GITHUB_METRICS = int(os.getenv("CACHE_TTL_GITHUB_METRICS", str(24 * 3600)))  # 24 hours
+    CACHE_TTL_GITHUB_DATA = int(os.getenv("CACHE_TTL_GITHUB_DATA", str(8 * 3600)))         # 8 hours
 
     # Kibana (for Elastic Agent Builder)
     KIBANA_URL = os.getenv("KIBANA_URL")  # Optional - derived from ELASTICSEARCH_HOST if not set
@@ -140,6 +158,8 @@ class Config:
             # Non-sensitive values (shown in full)
             "ANTHROPIC_FOUNDRY_RESOURCE": cls.ANTHROPIC_FOUNDRY_RESOURCE or "[NOT SET]",
             "ELASTICSEARCH_URL": cls.ELASTICSEARCH_URL or "[NOT SET]",
+            "REDIS_HOST": cls.REDIS_HOST,
+            "REDIS_PORT": cls.REDIS_PORT,
             "KIBANA_URL": cls.KIBANA_URL or "[NOT SET]",
             "LANGCHAIN_PROJECT": cls.LANGCHAIN_PROJECT,
             "LOG_LEVEL": cls.LOG_LEVEL,

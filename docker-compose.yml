@@ -12,7 +12,25 @@ services:
       - /app/.venv
     env_file:
       - .env
+    # Point the app at the Redis service below. This overrides REDIS_HOST from
+    # .env so the container can reach Redis by its service name.
+    environment:
+      - REDIS_HOST=redis
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # Local Redis instance used for caching (web search, GitHub metrics, GitHub
+  # issue/discussion lists). Redis expires stale entries automatically via TTL.
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      # Optional: keep cached data across container restarts
+      - redis_data:/data
     restart: unless-stopped
 
 volumes:
   research_reports:
+  redis_data:

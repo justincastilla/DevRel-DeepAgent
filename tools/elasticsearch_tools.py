@@ -4,7 +4,7 @@ Elasticsearch tools for storing and querying technology research data.
 
 import hashlib
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from elasticsearch import Elasticsearch
 from langchain_core.tools import tool
@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from config import config
 from exceptions import ElasticsearchError
+from tools.redis_cache import cache_get, cache_set
 from utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -59,9 +60,15 @@ class SnapshotAnalysis(BaseModel):
     summary: str = Field(description="2–3 sentence plain-text research summary")
 
 
+# Module-level singleton. Building an Elasticsearch() object opens a connection
+# pool and (for https) does a TLS handshake, so we reuse one client for the
+# whole process instead of creating a new one on every call.
+_es_client: Optional[Elasticsearch] = None
+
+
 def get_es_client() -> Elasticsearch:
     """
-    Get configured Elasticsearch client.
+    Get the shared Elasticsearch client, creating it on first use.
 
     Returns:
         Configured Elasticsearch client instance
@@ -69,17 +76,19 @@ def get_es_client() -> Elasticsearch:
     Raises:
         ElasticsearchError: If connection cannot be established
     """
-    if not config.ELASTICSEARCH_URL or not config.ELASTICSEARCH_API_KEY:
-        raise ElasticsearchError("Elasticsearch credentials not configured")
-
-    try:
-        return Elasticsearch(
-            config.ELASTICSEARCH_URL,
-            api_key=config.ELASTICSEARCH_API_KEY,
-        )
-    except Exception as e:
-        logger.error(f"Failed to connect to Elasticsearch: {e}")
-        raise ElasticsearchError(f"Failed to connect to Elasticsearch: {e}") from e
+    global _es_client
+    if _es_client is None:
+        if not config.ELASTICSEARCH_URL or not config.ELASTICSEARCH_API_KEY:
+            raise ElasticsearchError("Elasticsearch credentials not configured")
+        try:
+            _es_client = Elasticsearch(
+                config.ELASTICSEARCH_URL,
+                api_key=config.ELASTICSEARCH_API_KEY,
+            )
+        except Exception as e:
+            logger.error(f"Failed to connect to Elasticsearch: {e}")
+            raise ElasticsearchError(f"Failed to connect to Elasticsearch: {e}") from e
+    return _es_client
 
 
 def sanitize_metrics_for_es(metrics: dict) -> dict:
@@ -215,7 +224,7 @@ def store_research_snapshot(
 
         doc = {
             "repo": repo_name,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "metrics": sanitized_metrics,
             "analysis": sanitized_analysis,
             "tags": tags or [],
@@ -300,7 +309,7 @@ def get_trend_data(repo_name: str, days: int = 90) -> dict:
     try:
         es = get_es_client()
 
-        since = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
         results = es.search(
             index="technology-research",
@@ -417,7 +426,7 @@ def compare_technologies(repos: list[str]) -> dict:
                 })
 
         result = {
-            "comparison_date": datetime.utcnow().isoformat(),
+            "comparison_date": datetime.now(timezone.utc).isoformat(),
             "repositories": comparisons,
         }
 
@@ -486,249 +495,159 @@ def search_by_tags(tags: list[str], min_viability: float = 0) -> list:
 
 
 # =============================================================================
-# CACHING FUNCTIONS - Reduce API costs by caching results in Elasticsearch
+# CACHING FUNCTIONS - Fast key/value caching backed by a local Redis instance
+#
+# These used to store cache documents in Elasticsearch. They now use Redis (see
+# tools/redis_cache.py). Redis expires stale entries itself via TTL, so there is
+# no cleanup job to run, and a lookup is a single GET instead of a search query.
+#
+# The max_age_* arguments are kept so existing callers don't need to change, but
+# freshness is now governed by the TTL set when the entry was written (the
+# CACHE_TTL_* values in config.py). If Redis is down these degrade gracefully:
+# reads act as a miss, writes are skipped.
 # =============================================================================
 
 def _hash_query(query: str) -> str:
-    """Generate a hash for a search query."""
+    """Generate a stable short hash for a search query (used in the cache key)."""
     return hashlib.sha256(query.lower().strip().encode()).hexdigest()[:16]
 
 
 def get_cached_search(query: str, max_age_days: int = 7) -> Optional[dict]:
     """
-    Check if we have cached search results for a query.
+    Return cached web-search results for a query, or None on a miss.
 
     Args:
         query: The search query
-        max_age_days: Maximum age of cached results in days
+        max_age_days: Retained for backwards compatibility (Redis TTL governs freshness)
 
     Returns:
-        Cached results if found and fresh, None otherwise
+        Cached results if present, None otherwise
     """
-    query_hash = _hash_query(query)
-    since = (datetime.utcnow() - timedelta(days=max_age_days)).isoformat()
+    key = f"websearch:{_hash_query(query)}"
+    cached = cache_get(key)
+    if cached is not None:
+        logger.info(f"Cache HIT for query: {query[:50]}...")
+        return cached
 
-    try:
-        es = get_es_client()
-        result = es.search(
-            index="web-search-cache",
-            query={
-                "bool": {
-                    "must": [
-                        {"term": {"query_hash": query_hash}},
-                        {"range": {"timestamp": {"gte": since}}},
-                    ]
-                }
-            },
-            sort=[{"timestamp": "desc"}],
-            size=1,
-        )
-
-        if result["hits"]["hits"]:
-            cached = result["hits"]["hits"][0]["_source"]
-            logger.info(f"Cache HIT for query: {query[:50]}... (age: {cached['timestamp']})")
-            return cached["results"]
-
-        logger.info(f"Cache MISS for query: {query[:50]}...")
-        return None
-
-    except Exception as e:
-        logger.warning(f"Cache lookup failed (continuing without cache): {e}")
-        return None
+    logger.info(f"Cache MISS for query: {query[:50]}...")
+    return None
 
 
 def store_search_cache(query: str, results: dict, search_type: str = "tavily") -> None:
     """
-    Store search results in cache.
+    Store web-search results in Redis with the web-search TTL.
 
     Args:
         query: The search query
         results: The search results to cache
-        search_type: Type of search (e.g., "tavily", "github_issues")
+        search_type: Type of search (kept for backwards compatibility)
     """
-    try:
-        es = get_es_client()
-        doc = {
-            "query": query,
-            "query_hash": _hash_query(query),
-            "timestamp": datetime.utcnow().isoformat(),
-            "results": results,
-            "result_count": len(results.get("results", [])) if isinstance(results, dict) else 0,
-            "search_type": search_type,
-        }
-        es.index(index="web-search-cache", document=doc)
-        logger.info(f"Cached search results for: {query[:50]}...")
-    except Exception as e:
-        logger.warning(f"Failed to cache search results (continuing): {e}")
+    key = f"websearch:{_hash_query(query)}"
+    cache_set(key, results, config.CACHE_TTL_WEB_SEARCH)
+    logger.info(f"Cached search results for: {query[:50]}...")
 
 
 def get_cached_github_metrics(repo: str, max_age_hours: int = 24) -> Optional[dict]:
     """
-    Check if we have cached GitHub metrics for a repository.
+    Return cached GitHub metrics for a repository, or None on a miss.
 
     Args:
         repo: Repository name (owner/repo)
-        max_age_hours: Maximum age of cached metrics in hours
+        max_age_hours: Retained for backwards compatibility (Redis TTL governs freshness)
 
     Returns:
-        Cached metrics if found and fresh, None otherwise
+        Cached metrics if present, None otherwise
     """
-    since = (datetime.utcnow() - timedelta(hours=max_age_hours)).isoformat()
-
-    try:
-        es = get_es_client()
-        result = es.search(
-            index="github-metrics-cache",
-            query={
-                "bool": {
-                    "must": [
-                        {"term": {"repo": repo}},
-                        {"range": {"timestamp": {"gte": since}}},
-                    ]
-                }
-            },
-            sort=[{"timestamp": "desc"}],
-            size=1,
-        )
-
-        if result["hits"]["hits"]:
-            cached = result["hits"]["hits"][0]["_source"]
-            logger.info(f"GitHub cache HIT for {repo} (age: {cached['timestamp']})")
-            metrics = cached["metrics"]
-            derived = cached.get("derived", {})
-
-            # Workflow-refreshed cache entries store raw counts but not rates.
-            # Compute rates here so downstream scoring gets correct values.
-            if derived.get("issue_close_rate", 0) == 0:
-                open_i = metrics.get("open_issues", 0)
-                closed_i = metrics.get("closed_issues", 0)
-                total_i = open_i + closed_i
-                if total_i > 0:
-                    derived["issue_close_rate"] = round(closed_i / total_i * 100, 1)
-
-            if derived.get("pr_merge_rate", 0) == 0:
-                open_p = metrics.get("open_prs", 0)
-                merged_p = metrics.get("merged_prs", 0)
-                total_p = open_p + merged_p
-                if total_p > 0:
-                    derived["pr_merge_rate"] = round(merged_p / total_p * 100, 1)
-
-            return {
-                "metrics": metrics,
-                "derived": derived,
-                "cached": True,
-                "cache_timestamp": cached["timestamp"],
-            }
-
+    key = f"ghmetrics:{repo}"
+    cached = cache_get(key)
+    if cached is None:
         logger.info(f"GitHub cache MISS for {repo}")
         return None
 
-    except Exception as e:
-        logger.warning(f"GitHub cache lookup failed (continuing without cache): {e}")
-        return None
+    logger.info(f"GitHub cache HIT for {repo}")
+    metrics = cached.get("metrics", {})
+    derived = cached.get("derived", {})
+
+    # Some cache entries store raw counts but not rates. Compute the rates here
+    # so downstream scoring always gets correct values.
+    if derived.get("issue_close_rate", 0) == 0:
+        open_i = metrics.get("open_issues", 0)
+        closed_i = metrics.get("closed_issues", 0)
+        total_i = open_i + closed_i
+        if total_i > 0:
+            derived["issue_close_rate"] = round(closed_i / total_i * 100, 1)
+
+    if derived.get("pr_merge_rate", 0) == 0:
+        open_p = metrics.get("open_prs", 0)
+        merged_p = metrics.get("merged_prs", 0)
+        total_p = open_p + merged_p
+        if total_p > 0:
+            derived["pr_merge_rate"] = round(merged_p / total_p * 100, 1)
+
+    return {
+        "metrics": metrics,
+        "derived": derived,
+        "cached": True,
+        "cache_timestamp": cached.get("cache_timestamp"),
+    }
 
 
 def store_github_metrics_cache(repo: str, metrics: dict, derived: dict = None) -> None:
     """
-    Store GitHub metrics in cache.
+    Store GitHub metrics in Redis with the GitHub-metrics TTL.
 
     Args:
         repo: Repository name (owner/repo)
         metrics: Raw metrics from GitHub API
         derived: Derived calculations
     """
-    try:
-        es = get_es_client()
-        doc = {
-            "repo": repo,
-            "timestamp": datetime.utcnow().isoformat(),
-            "metrics": metrics,
-            "derived": derived or {},
-        }
-        es.index(index="github-metrics-cache", document=doc)
-        logger.info(f"Cached GitHub metrics for {repo}")
-    except Exception as e:
-        logger.warning(f"Failed to cache GitHub metrics (continuing): {e}")
+    key = f"ghmetrics:{repo}"
+    value = {
+        "repo": repo,
+        "cache_timestamp": datetime.now(timezone.utc).isoformat(),
+        "metrics": metrics,
+        "derived": derived or {},
+    }
+    cache_set(key, value, config.CACHE_TTL_GITHUB_METRICS)
+    logger.info(f"Cached GitHub metrics for {repo}")
 
 
 def get_cached_github_data(
     repo: str, data_type: str, max_age_hours: int = 8
 ) -> Optional[list]:
     """
-    Check if we have cached GitHub list data (issues or discussions) for a repo.
-
-    Uses a dedicated 'github-data-cache' index (separate from metrics cache)
-    to avoid mapping conflicts.
+    Return cached GitHub list data (issues or discussions) for a repo, or None.
 
     Args:
         repo: Repository name (owner/repo)
         data_type: 'issues' or 'discussions'
-        max_age_hours: Maximum cache age in hours (default 8)
+        max_age_hours: Retained for backwards compatibility (Redis TTL governs freshness)
 
     Returns:
-        Cached list if found and fresh, None otherwise
+        Cached list if present, None otherwise
     """
-    import json
+    key = f"ghdata:{repo}:{data_type}"
+    cached = cache_get(key)
+    if cached is not None:
+        logger.info(f"GitHub {data_type} cache HIT for {repo} ({len(cached)} items)")
+        return cached
 
-    since = (datetime.utcnow() - timedelta(hours=max_age_hours)).isoformat()
-    try:
-        es = get_es_client()
-        result = es.search(
-            index="github-data-cache",
-            query={
-                "bool": {
-                    "must": [
-                        {"term": {"repo": repo}},
-                        {"term": {"data_type": data_type}},
-                        {"range": {"timestamp": {"gte": since}}},
-                    ]
-                }
-            },
-            sort=[{"timestamp": "desc"}],
-            size=1,
-        )
-
-        if result["hits"]["hits"]:
-            cached = result["hits"]["hits"][0]["_source"]
-            logger.info(
-                f"GitHub {data_type} cache HIT for {repo} "
-                f"(age: {cached['timestamp']})"
-            )
-            return json.loads(cached.get("json_data", "[]"))
-
-        logger.info(f"GitHub {data_type} cache MISS for {repo}")
-        return None
-    except Exception as e:
-        logger.warning(
-            f"GitHub {data_type} cache lookup failed (continuing without cache): {e}"
-        )
-        return None
+    logger.info(f"GitHub {data_type} cache MISS for {repo}")
+    return None
 
 
 def store_github_data_cache(repo: str, data_type: str, data: list) -> None:
     """
-    Store GitHub list data (issues or discussions) in cache.
+    Store GitHub list data (issues or discussions) in Redis.
 
     Args:
         repo: Repository name (owner/repo)
         data_type: 'issues' or 'discussions'
         data: List of items to cache
     """
-    import json
-
-    try:
-        es = get_es_client()
-        doc = {
-            "repo": repo,
-            "data_type": data_type,
-            "timestamp": datetime.utcnow().isoformat(),
-            "json_data": json.dumps(data),
-            "count": len(data),
-        }
-        es.index(index="github-data-cache", document=doc)
-        logger.info(f"Cached {len(data)} {data_type} for {repo}")
-    except Exception as e:
-        logger.warning(f"Failed to cache GitHub {data_type} (continuing): {e}")
+    key = f"ghdata:{repo}:{data_type}"
+    cache_set(key, data, config.CACHE_TTL_GITHUB_DATA)
+    logger.info(f"Cached {len(data)} {data_type} for {repo}")
 
 
 # =============================================================================
@@ -750,7 +669,7 @@ def store_timeseries_snapshot(repo: str, metrics: dict, derived: dict = None) ->
         es = get_es_client()
         doc = {
             "repo": repo,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             # Core metrics
             "stars": metrics.get("stars", 0),
             "forks": metrics.get("forks", 0),
@@ -789,7 +708,7 @@ def store_commit_history(repo: str, commits: list) -> None:
 
     try:
         es = get_es_client()
-        captured_at = datetime.utcnow().isoformat()
+        captured_at = datetime.now(timezone.utc).isoformat()
 
         # Aggregate commits by week
         weekly_data = {}
@@ -842,7 +761,7 @@ def get_repo_timeseries(repo: str, days: int = 180) -> list:
     Returns:
         List of snapshots sorted by timestamp
     """
-    since = (datetime.utcnow() - timedelta(days=days)).isoformat()
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
     try:
         es = get_es_client()
@@ -905,7 +824,7 @@ def store_adoption_signal(
 
         doc = {
             "repo": repo,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "signal_type": signal_type,
             "source_url": source_url,
             "source_title": source_title,
@@ -935,7 +854,7 @@ def get_adoption_signals(repo: str, signal_type: str = None, days: int = 90) -> 
     Returns:
         List of adoption signals
     """
-    since = (datetime.utcnow() - timedelta(days=days)).isoformat()
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
     try:
         es = get_es_client()
@@ -1006,7 +925,7 @@ def store_research_report(
         es = get_es_client()
         doc = {
             "repo": repo,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "report_type": report_type,
             "use_case": use_case,
             "viability_score": viability_score,
@@ -1066,7 +985,7 @@ def get_cached_report(repo: str, max_age_days: int = 7) -> Optional[dict]:
     Returns:
         Recent report or None if stale/missing
     """
-    since = (datetime.utcnow() - timedelta(days=max_age_days)).isoformat()
+    since = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat()
 
     try:
         es = get_es_client()
@@ -1124,7 +1043,7 @@ def store_discovery(
     try:
         es = get_es_client()
         doc = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "use_case": use_case,
             "use_case_keyword": use_case.lower().strip(),
             "technologies": technologies,
@@ -1151,7 +1070,7 @@ def get_past_discoveries(use_case: str = None, days: int = 90) -> list:
     Returns:
         List of past discoveries
     """
-    since = (datetime.utcnow() - timedelta(days=days)).isoformat()
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
     try:
         es = get_es_client()
@@ -1211,67 +1130,9 @@ def get_all_discovered_repos() -> list:
 # =============================================================================
 # Cache Cleanup / Expiry
 # =============================================================================
-
-# TTLs for each cache index (in hours).  Matches the max_age values used in
-# the cache-read functions so a document that would be rejected by the reader
-# is also deleted from the index on the next cleanup pass.
-_CACHE_TTL_HOURS: dict[str, int] = {
-    "web-search-cache": 7 * 24,      # 7 days  — matches get_cached_search default
-    "github-metrics-cache": 24,       # 24 h    — matches get_cached_github_metrics default
-    "github-data-cache": 24,          # 24 h    — matches get_cached_github_data default
-}
-
-
-def cleanup_cache_index(index: str, timestamp_field: str, max_age_hours: int) -> int:
-    """
-    Delete stale documents from a single cache index.
-
-    Args:
-        index: Elasticsearch index name
-        timestamp_field: Name of the date field to check (e.g. "timestamp")
-        max_age_hours: Delete documents older than this many hours
-
-    Returns:
-        Number of documents deleted (0 on error or index not found)
-    """
-    cutoff = (datetime.utcnow() - timedelta(hours=max_age_hours)).isoformat()
-    try:
-        es = get_es_client()
-        resp = es.delete_by_query(
-            index=index,
-            query={"range": {timestamp_field: {"lt": cutoff}}},
-            refresh=True,
-            ignore_unavailable=True,  # silently skip if index doesn't exist yet
-        )
-        deleted = resp.get("deleted", 0)
-        if deleted:
-            logger.info(
-                f"Cache cleanup: removed {deleted} stale docs from '{index}' "
-                f"(older than {max_age_hours}h)"
-            )
-        return deleted
-    except Exception as e:
-        logger.warning(f"Cache cleanup failed for '{index}': {e}")
-        return 0
-
-
-def cleanup_all_caches() -> dict[str, int]:
-    """
-    Expire stale documents from all cache indices.
-
-    Called automatically at agent startup so indices stay bounded without
-    requiring Elasticsearch ILM or data-stream rollover configuration.
-
-    Returns:
-        Dict mapping index name → number of documents deleted
-    """
-    results: dict[str, int] = {}
-    for index, max_age_hours in _CACHE_TTL_HOURS.items():
-        results[index] = cleanup_cache_index(index, "timestamp", max_age_hours)
-
-    total = sum(results.values())
-    if total:
-        logger.info(f"Cache cleanup complete: {total} stale documents removed across {len(results)} indices")
-    else:
-        logger.info("Cache cleanup complete: all indices are within TTL")
-    return results
+#
+# There is intentionally no cleanup code here anymore. Caching now lives in
+# Redis (see tools/redis_cache.py), and Redis expires stale keys automatically
+# using the TTL set when each entry is written. The old cleanup_all_caches() /
+# cleanup_cache_index() helpers and the scheduled cleanup workflow are no longer
+# needed.
