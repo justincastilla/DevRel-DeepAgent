@@ -81,39 +81,9 @@ INDICES = {
         }
         },
     },
-    "web-search-cache": {
-        "mappings": {
-            "properties": {
-                "query": {"type": "text"},
-                "query_hash": {"type": "keyword"},
-                "timestamp": {"type": "date"},
-                "results": {"type": "object", "enabled": False},  # Store raw JSON without indexing
-                "result_count": {"type": "integer"},
-                "search_type": {"type": "keyword"},  # e.g., "tavily", "github_issues"
-            }
-        },
-    },
-    "github-metrics-cache": {
-        "mappings": {
-            "properties": {
-                "repo": {"type": "keyword"},
-                "timestamp": {"type": "date"},
-                "metrics": {"type": "object", "enabled": False},  # Raw metrics JSON
-                "derived": {"type": "object", "enabled": False},  # Derived calculations
-            }
-        },
-    },
-    "github-data-cache": {
-        "mappings": {
-            "properties": {
-                "repo": {"type": "keyword"},
-                "data_type": {"type": "keyword"},  # "issues" or "discussions"
-                "timestamp": {"type": "date"},
-                "json_data": {"type": "object", "enabled": False},  # Raw JSON, not indexed
-                "count": {"type": "integer"},
-            }
-        },
-    },
+    # NOTE: Ephemeral API caches (web search, GitHub metrics, GitHub issues/
+    # discussions) are no longer Elasticsearch indices — they live in Redis
+    # (see tools/cache.py), which expires them automatically via key TTL.
     "repo-timeseries": {
         "mappings": {
             "properties": {

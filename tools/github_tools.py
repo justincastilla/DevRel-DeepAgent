@@ -14,11 +14,13 @@ from config import config
 from exceptions import GitHubAPIError, RateLimitError, RepositoryNotFoundError
 from utils.logging_utils import get_logger
 from utils.retry_utils import with_retry
-from tools.elasticsearch_tools import (
+from tools.cache import (
     get_cached_github_metrics,
     store_github_metrics_cache,
     get_cached_github_data,
     store_github_data_cache,
+)
+from tools.elasticsearch_tools import (
     store_timeseries_snapshot,
     store_commit_history,
 )
@@ -545,15 +547,26 @@ def fetch_repo_metrics(owner: str, repo: str, cache_hours: int = 24) -> dict:
     repo_full = f"{owner}/{repo}"
 
     # Check cache first
-    cached = get_cached_github_metrics(repo_full, max_age_hours=cache_hours)
+    cached = get_cached_github_metrics(repo_full)
     if cached:
         logger.info(f"Using cached metrics for {repo_full}")
+        metrics = cached["metrics"]
+        derived = cached.get("derived", {})
+        # Safety net: if a cache entry stored raw counts but no rates, compute
+        # them here so downstream scoring always gets valid values.
+        if not derived.get("issue_close_rate"):
+            total_i = metrics.get("open_issues", 0) + metrics.get("closed_issues", 0)
+            if total_i > 0:
+                derived["issue_close_rate"] = round(metrics.get("closed_issues", 0) / total_i * 100, 1)
+        if not derived.get("pr_merge_rate"):
+            total_p = metrics.get("open_prs", 0) + metrics.get("merged_prs", 0)
+            if total_p > 0:
+                derived["pr_merge_rate"] = round(metrics.get("merged_prs", 0) / total_p * 100, 1)
         return {
             "repo": repo_full,
-            "metrics": cached["metrics"],
-            "derived": cached["derived"],
+            "metrics": metrics,
+            "derived": derived,
             "cached": True,
-            "cache_timestamp": cached["cache_timestamp"],
         }
 
     logger.info(f"Fetching fresh metrics for {repo_full}")
@@ -720,8 +733,8 @@ def fetch_repo_metrics(owner: str, repo: str, cache_hours: int = 24) -> dict:
         ],
     }
 
-    # Cache the results for future use
-    store_github_metrics_cache(repo_full, metrics["metrics"], metrics["derived"])
+    # Cache the results for future use (cache_hours sets the Redis TTL)
+    store_github_metrics_cache(repo_full, metrics["metrics"], metrics["derived"], ttl_hours=cache_hours)
 
     # Store time-series data for historical tracking
     store_timeseries_snapshot(repo_full, metrics["metrics"], metrics["derived"])
@@ -752,7 +765,7 @@ def fetch_recent_issues(owner: str, repo: str, count: int = 20, cache_hours: int
     repo_full = f"{owner}/{repo}"
 
     # Check cache first
-    cached = get_cached_github_data(repo_full, "issues", max_age_hours=cache_hours)
+    cached = get_cached_github_data(repo_full, "issues")
     if cached is not None:
         logger.info(f"Using cached issues for {repo_full} ({len(cached)} items)")
         return {"issues": cached, "count": len(cached), "cached": True}
@@ -816,7 +829,7 @@ def fetch_recent_issues(owner: str, repo: str, count: int = 20, cache_hours: int
         )
 
     logger.info(f"Fetched {len(issues)} issues for {repo_full}")
-    store_github_data_cache(repo_full, "issues", issues)
+    store_github_data_cache(repo_full, "issues", issues, ttl_hours=cache_hours)
     return {"issues": issues, "count": len(issues), "cached": False}
 
 
@@ -838,7 +851,7 @@ def fetch_repo_discussions(owner: str, repo: str, count: int = 10, cache_hours: 
     repo_full = f"{owner}/{repo}"
 
     # Check cache first
-    cached = get_cached_github_data(repo_full, "discussions", max_age_hours=cache_hours)
+    cached = get_cached_github_data(repo_full, "discussions")
     if cached is not None:
         logger.info(f"Using cached discussions for {repo_full} ({len(cached)} items)")
         return {"discussions": cached, "count": len(cached), "cached": True}
@@ -890,7 +903,7 @@ def fetch_repo_discussions(owner: str, repo: str, count: int = 10, cache_hours: 
         ]
 
         logger.info(f"Fetched {len(formatted_discussions)} discussions for {repo_full}")
-        store_github_data_cache(repo_full, "discussions", formatted_discussions)
+        store_github_data_cache(repo_full, "discussions", formatted_discussions, ttl_hours=cache_hours)
         return {"discussions": formatted_discussions, "count": len(formatted_discussions), "cached": False}
     except RepositoryNotFoundError as e:
         logger.warning(f"Repository {repo_full} not found when fetching discussions: {e}")

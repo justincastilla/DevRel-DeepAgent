@@ -23,7 +23,16 @@ Your `.env` file should already contain the required API keys:
 - `GITHUB_API_KEY` - For GitHub API access
 - `ELASTICSEARCH_HOST` - Your Elasticsearch cluster URL
 - `ELASTICSEARCH_API_KEY` - Elasticsearch authentication
+- `REDIS_URL` - Redis connection for caching (optional; defaults to `redis://localhost:6379/0`)
 - `LANGSMITH_API_KEY` - For observability (optional)
+
+Caching of external API results uses Redis. It is optional and degrades gracefully — if Redis is unavailable, every cache lookup is treated as a miss and the app still runs. Start a local Redis with:
+
+```bash
+docker run --rm -p 6379:6379 redis:7-alpine
+```
+
+(Or run `docker compose up`, which starts a `redis` service automatically.)
 
 ## Step 3: Setup Elasticsearch Index
 

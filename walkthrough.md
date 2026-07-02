@@ -33,7 +33,8 @@ The library handles all the LangGraph state management, message routing between 
 |-------|-----------|
 | Agent framework | LangChain DeepAgents (LangGraph) |
 | LLM | Claude Sonnet (via Azure Anthropic Foundry) |
-| Data store | Elasticsearch (Elastic Cloud) |
+| Data store | Elasticsearch (Elastic Cloud) — persistent data |
+| Cache | Redis (`redis:7-alpine`) — ephemeral API results |
 | Elastic Agent | Elastic Agent Builder (`/converse` endpoint) |
 | Web search | Tavily API |
 | GitHub data | GitHub GraphQL API |
@@ -108,10 +109,9 @@ The `elastic-agent` subagent sends **natural-language queries** to the Elastic A
 | `research-reports` | Full evaluation and comparison reports |
 | `repo-timeseries` | Point-in-time metrics for trend graphs |
 | `adoption-signals` | Web-sourced evidence: blog posts, case studies, job postings |
-| `web-search-cache` | Cached Tavily results (7-day TTL) |
-| `github-metrics-cache` | Cached GitHub API responses (24-hour TTL) |
-| `github-data-cache` | Cached issues/discussions (24-hour TTL) |
 | `technology-discoveries` | Discovery run results |
+
+> These indices hold **persistent** data. Ephemeral API-result caching (Tavily results, GitHub metrics, GitHub issues/discussions) moved out of Elasticsearch into Redis — see the [Caching Strategy](#caching-strategy) section.
 
 ---
 
@@ -182,26 +182,35 @@ Orchestrator — comparison report across all candidates → store + deliver
 
 ## Caching Strategy
 
-Caches are checked before hitting external APIs to reduce latency and API costs.
+Ephemeral caches are checked before hitting external APIs to reduce latency and API costs. They live in **Redis** (`tools/cache.py`), keyed by content, with a native per-key TTL. The hit/miss flow is unchanged — check Redis first, return on HIT, otherwise call the API and store the result with a TTL:
 
 ```
 fetch_repo_metrics()
-    └─→ check github-metrics-cache (24h TTL)
+    └─→ check Redis key gh-metrics:<repo> (24h TTL)
         ├─→ HIT  → return cached data (badge: "cache hit")
-        └─→ MISS → GitHub GraphQL API → store in cache (badge: "cache miss")
+        └─→ MISS → GitHub GraphQL API → store in Redis with TTL (badge: "cache miss")
+
+fetch_recent_issues() / fetch_repo_discussions()
+    └─→ check Redis key gh-data:<repo>:<issues|discussions> (24h TTL)
+        ├─→ HIT  → return cached list
+        └─→ MISS → GitHub GraphQL API → store in Redis with TTL
 
 tavily_search()
-    └─→ check web-search-cache (7d TTL)
+    └─→ check Redis key search:<hash> (7d TTL)
         ├─→ HIT  → return cached results
-        └─→ MISS → Tavily API → store in cache
+        └─→ MISS → Tavily API → store in Redis with TTL
+```
 
+Because Redis expires keys automatically via their TTL, there is **no cleanup job or startup step** — the old Elasticsearch `delete_by_query` pass and the scheduled cleanup workflow were removed. Caching is also **optional**: if `REDIS_URL` is unset or Redis is unreachable, every lookup simply becomes a MISS and the app keeps working (just slower).
+
+Report caching is different and still lives in Elasticsearch — `ask_elastic_agent()` reads the persistent `research-reports` index for prior evaluations:
+
+```
 ask_elastic_agent()
     └─→ check research-reports (max_age_days param)
         ├─→ HIT  → return existing report (historical context only)
         └─→ MISS → "no data found" (triggers fresh research)
 ```
-
-Cache cleanup runs at server startup, deleting documents older than their TTL using Elasticsearch `delete_by_query`.
 
 ---
 
@@ -221,7 +230,8 @@ subagents/
 tools/
     elastic_agent_client.py     # HTTP client for Elastic Agent Builder /converse endpoint
     elastic_subagent_tools.py   # ask_elastic_agent LangChain tool (single entry point)
-    elasticsearch_tools.py      # Direct ES client: store/retrieve snapshots, cache, signals
+    elasticsearch_tools.py      # Direct ES client: store/retrieve snapshots, signals
+    cache.py                    # Redis-backed ephemeral cache (Tavily, GitHub metrics/data)
     github_tools.py             # GitHub GraphQL: metrics, issues, discussions (pooled, rate-limited)
     scoring_tools.py            # calculate_viability_score()
     web_tools.py                # tavily_search(), record_adoption_signal()

@@ -10,7 +10,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import asyncio
-from agent import agent
+from agent import get_agent
+from config import config
 from utils.logging_utils import setup_logging, get_logger
 
 # Setup logging
@@ -40,9 +41,11 @@ async def run_test(query: str):
     logger.info(f"Running test query: {query}")
 
     try:
-        result = await agent.ainvoke({
-            "messages": [{"role": "user", "content": query}]
-        })
+        agent = get_agent()
+        result = await agent.ainvoke(
+            {"messages": [{"role": "user", "content": query}]},
+            config={"recursion_limit": config.RECURSION_LIMIT},
+        )
 
         print("\nRESPONSE:")
         print(f"{'='*80}")

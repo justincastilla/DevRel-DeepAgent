@@ -5,10 +5,10 @@ description: |
   Data sources:
     github.searchIssues × 4  →  open_issues, closed_issues, open_prs, merged_prs
 
-  Fields refreshed:
-    open_issues, closed_issues, open_prs, merged_prs
-    issue_close_rate and pr_merge_rate are computed by the Python app on read
-    (see tools/elasticsearch_tools.py get_cached_github_metrics)
+  This workflow appends point-in-time counts to the repo-timeseries index for
+  trend graphs. It does NOT populate the request cache: ephemeral GitHub-metrics
+  caching now lives in Redis (tools/cache.py) and is written by the Python app,
+  which an Elasticsearch-based workflow cannot reach.
 
   Fields NOT refreshed (require ai.prompt structured output — blocked in Kibana):
     stars, forks  (stored as 0; populated by Python agent on full evaluation)
@@ -97,37 +97,7 @@ steps:
           repo: "{{ foreach.item.key | split: '/' | last }}"
           type: "pr"
 
-      # 2e. Write to github-metrics-cache
-      # issue_close_rate and pr_merge_rate are computed by Python on read.
-      # stars/forks stored as 0 — populated by Python agent on full evaluation.
-      # TODO: Replace TIMESTAMP_VAR once the correct variable is confirmed.
-      - name: store_metrics_cache
-        type: elasticsearch.request
-        with:
-          method: POST
-          path: /github-metrics-cache/_doc
-          body:
-            repo: "{{ foreach.item.key }}"
-            timestamp: "{{ TIMESTAMP_VAR }}"
-            source: "workflow_refresh"
-            metrics:
-              stars: 0
-              forks: 0
-              open_issues: "{{ steps.count_open_issues.output.total_count }}"
-              closed_issues: "{{ steps.count_closed_issues.output.total_count }}"
-              open_prs: "{{ steps.count_open_prs.output.total_count }}"
-              merged_prs: "{{ steps.count_merged_prs.output.total_count }}"
-              contributors: 0
-            derived:
-              issue_close_rate: 0
-              pr_merge_rate: 0
-              commits_7d: 0
-              commits_30d: 0
-              commits_90d: 0
-              stars_per_month: 0
-              repo_age_days: 0
-
-      # 2f. Append to repo-timeseries for trend graphs
+      # 2e. Append to repo-timeseries for trend graphs
       - name: store_timeseries
         type: elasticsearch.request
         with:

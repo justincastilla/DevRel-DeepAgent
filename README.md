@@ -42,8 +42,9 @@ flowchart TB
         ElasticAgent[Elastic Agent Builder<br/>Kibana API]
     end
 
-    subgraph Storage["Elasticsearch Storage"]
-        ES[(Elasticsearch<br/>8 Indices)]
+    subgraph Storage["Storage"]
+        ES[(Elasticsearch<br/>Persistent Indices)]
+        Redis[(Redis<br/>Ephemeral Cache)]
     end
 
     CLI --> Main
@@ -63,6 +64,10 @@ flowchart TB
     Metrics -.-> ES
     Sentiment -.-> ES
     Web -.-> ES
+
+    Metrics -.->|cache| Redis
+    Sentiment -.->|cache| Redis
+    Web -.->|cache| Redis
 ```
 
 ---
@@ -144,8 +149,8 @@ flowchart LR
         E1[semantic_search_technologies]
         E2[get_repository_trends]
         E3[get_adoption_signals]
-        E4[check_search_cache]
-        E5[...16 total tools]
+        E4[get_latest_research_report]
+        E5[...more tools]
     end
 
     O --> T1 & T2 & T3 & T4 & T5 & T6
@@ -208,7 +213,6 @@ Interfaces with Elasticsearch via the **Elastic Agent Builder**:
 | Semantic Search | `semantic_search_technologies` |
 | Trend Analysis | `get_repository_trends`, `get_repository_timeseries`, `get_repository_stats` |
 | Adoption Signals | `get_adoption_signals`, `get_adoption_signals_by_type`, `count_adoption_signals` |
-| Caching | `check_search_cache`, `check_github_metrics_cache` |
 | Reports | `get_latest_research_report`, `get_cached_research_report` |
 | Discoveries | `get_past_discoveries`, `search_discoveries_by_use_case`, `get_all_discovered_repositories` |
 
@@ -229,6 +233,7 @@ sequenceDiagram
     participant ElasticAgent
     participant GitHub
     participant Tavily
+    participant Redis
     participant Elasticsearch
 
     User->>CLI: evaluate owner/repo
@@ -236,7 +241,8 @@ sequenceDiagram
 
     par Parallel Research
         Orchestrator->>MetricsAgent: fetch metrics
-        MetricsAgent->>GitHub: API request
+        MetricsAgent->>Redis: check gh-metrics cache
+        MetricsAgent->>GitHub: API request (on cache miss)
         GitHub-->>MetricsAgent: repo data
         MetricsAgent-->>Orchestrator: metrics analysis
     and
@@ -246,13 +252,14 @@ sequenceDiagram
         SentimentAgent-->>Orchestrator: sentiment analysis
     and
         Orchestrator->>WebAgent: research adoption
-        WebAgent->>Tavily: search web
+        WebAgent->>Redis: check search cache
+        WebAgent->>Tavily: search web (on cache miss)
         Tavily-->>WebAgent: search results
         WebAgent-->>Orchestrator: adoption signals
     and
-        Orchestrator->>ElasticAgent: check cache/history
+        Orchestrator->>ElasticAgent: check history/prior reports
         ElasticAgent->>Elasticsearch: ES|QL query
-        Elasticsearch-->>ElasticAgent: cached data
+        Elasticsearch-->>ElasticAgent: historical data
         ElasticAgent-->>Orchestrator: historical context
     end
 
@@ -311,18 +318,6 @@ erDiagram
         object technologies
     }
 
-    WEB_SEARCH_CACHE {
-        keyword query_hash PK
-        date timestamp
-        object results
-    }
-
-    GITHUB_METRICS_CACHE {
-        keyword repo PK
-        date timestamp
-        object metrics
-    }
-
     COMMIT_HISTORY {
         keyword repo FK
         keyword week_bucket
@@ -343,9 +338,21 @@ erDiagram
 | `adoption-signals` | Blog posts, case studies, job postings | Permanent |
 | `research-reports` | Final evaluation/comparison reports | Permanent |
 | `technology-discoveries` | Discovered technologies by use case | Permanent |
-| `web-search-cache` | Cached Tavily search results | 7 days |
-| `github-metrics-cache` | Cached GitHub API responses | 24 hours |
 | `commit-history` | Weekly commit aggregates by author | Permanent |
+
+> All Elasticsearch indices above hold **persistent** data. Ephemeral API-result caching has moved to Redis (see below).
+
+### Redis Cache
+
+Ephemeral caching of external API results now lives in Redis (see `tools/cache.py`), not Elasticsearch. Redis expires each key automatically via its native per-key TTL, so there is no cleanup job.
+
+| Redis Key | Purpose | TTL |
+|-----------|---------|-----|
+| `search:<hash>` | Cached Tavily search results | 7 days |
+| `gh-metrics:<repo>` | Cached GitHub API metrics | 24 hours |
+| `gh-data:<repo>:<issues\|discussions>` | Cached GitHub issues/discussions | 24 hours |
+
+Redis is optional: if `REDIS_URL` is unset or Redis is unreachable, every cache lookup simply becomes a MISS and the app keeps working (just slower).
 
 ---
 
@@ -370,9 +377,10 @@ DeepDevRel/
 ├── tools/                        # Agent tools
 │   ├── __init__.py
 │   ├── github_tools.py           # GitHub API interactions
+│   ├── cache.py                  # Redis cache for external API results
 │   ├── elasticsearch_tools.py    # Direct ES operations
 │   ├── elastic_agent_client.py   # Kibana Agent Builder client
-│   ├── elastic_subagent_tools.py # ES|QL tool wrappers (16 tools)
+│   ├── elastic_subagent_tools.py # ask_elastic_agent tool (single entry point)
 │   └── scoring_tools.py          # Viability scoring logic
 │
 ├── utils/                        # Utilities
@@ -428,6 +436,10 @@ ELASTICSEARCH_API_KEY=your_base64_encoded_key
 KIBANA_URL=https://your-cluster.kb.cloud.com
 # KIBANA_API_KEY=optional_if_same_as_es_key
 
+# Redis (ephemeral API-result cache; optional — app degrades gracefully if absent)
+# Defaults to redis://localhost:6379/0; docker-compose sets redis://redis:6379/0
+REDIS_URL=redis://localhost:6379/0
+
 # Observability (optional)
 LANGSMITH_API_KEY=your_key
 LANGCHAIN_PROJECT=devrel-research-agent
@@ -441,7 +453,7 @@ python scripts/setup_elasticsearch.py
 
 ### 4. Create ES|QL tools in Kibana Dev Tools
 
-Copy commands from `elastic_agent_tools.md` into Kibana Dev Tools to create the 16 ES|QL tools in the Agent Builder.
+Copy commands from `elastic_agent_tools.md` into Kibana Dev Tools to create the ES|QL tools in the Agent Builder.
 
 ---
 
@@ -546,14 +558,17 @@ python cli.py evaluate owner/repo --output report.json --format json
 ### Direct Python Invocation
 
 ```python
-from agent import agent
+from agent import get_agent
+from config import config
 
-result = agent.invoke({
-    "messages": [{
+agent = get_agent()  # lazy singleton; created on first call
+result = agent.invoke(
+    {"messages": [{
         "role": "user",
         "content": "Evaluate langchain-ai/langgraph for building DevRel research automation"
-    }]
-})
+    }]},
+    config={"recursion_limit": config.RECURSION_LIMIT},
+)
 
 print(result["messages"][-1].content)
 ```

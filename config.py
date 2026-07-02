@@ -56,6 +56,9 @@ class Config:
     ELASTICSEARCH_URL = os.getenv("ELASTICSEARCH_HOST")  # Using ELASTICSEARCH_HOST from .env
     ELASTICSEARCH_API_KEY = os.getenv("ELASTICSEARCH_API_KEY")
 
+    # Redis (caching layer). Optional: if unset/unavailable the app runs without a cache.
+    REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
     # Kibana (for Elastic Agent Builder)
     KIBANA_URL = os.getenv("KIBANA_URL")  # Optional - derived from ELASTICSEARCH_HOST if not set
     KIBANA_API_KEY = os.getenv("KIBANA_API_KEY")  # Optional - uses ELASTICSEARCH_API_KEY if not set

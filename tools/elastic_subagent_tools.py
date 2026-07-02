@@ -28,7 +28,6 @@ def ask_elastic_agent(query: str, conversation_id: str = None) -> str:
     Use this tool for any data retrieval from Elasticsearch, including:
     - Finding similar technologies via semantic search
     - Retrieving historical snapshots, trends, and time-series data
-    - Checking cached GitHub metrics or web search results
     - Getting adoption signals (blog posts, case studies, job postings)
     - Fetching past research reports or technology discoveries
     - Comparing repository data side-by-side

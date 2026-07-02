@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Optional
 
 import markdown
-from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, FileResponse
@@ -24,7 +23,6 @@ from jinja2 import Environment, FileSystemLoader
 from agent import get_agent, MODELS, DEFAULT_MODEL
 from config import config
 from cli import save_report_to_file
-from tools.elasticsearch_tools import cleanup_all_caches
 from utils.logging_utils import setup_logging, get_logger
 
 # Setup logging
@@ -45,20 +43,9 @@ REPORTS_DIR.mkdir(exist_ok=True)
 # Jinja2 setup
 jinja_env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)))
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Run startup tasks before serving requests."""
-    logger.info("Server startup: running cache cleanup...")
-    try:
-        cleanup_all_caches()
-    except Exception as e:
-        # Don't block startup if Elasticsearch is unavailable
-        logger.warning(f"Cache cleanup skipped at startup: {e}")
-    yield
-
-
 # FastAPI app
-app = FastAPI(title="DevRel Research Agent", version="1.0.0", lifespan=lifespan)
+# (Cache expiry is handled automatically by Redis TTL — no startup cleanup needed.)
+app = FastAPI(title="DevRel Research Agent", version="1.0.0")
 
 # Mount static files
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")

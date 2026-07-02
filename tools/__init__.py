@@ -16,22 +16,20 @@ from .github_tools import (
     get_remaining_github_calls,
     get_github_rate_limit_stats,
 )
-from .elasticsearch_tools import (
-    store_research_snapshot,
-    find_similar_technologies,
-    get_trend_data,
-    compare_technologies,
-    search_by_tags,
-    # Cache functions
+from .cache import (
     get_cached_search,
     store_search_cache,
     get_cached_github_metrics,
     store_github_metrics_cache,
     get_cached_github_data,
     store_github_data_cache,
-    # Cache cleanup
-    cleanup_all_caches,
-    cleanup_cache_index,
+)
+from .elasticsearch_tools import (
+    store_research_snapshot,
+    find_similar_technologies,
+    get_trend_data,
+    compare_technologies,
+    search_by_tags,
     # Time-series functions
     store_timeseries_snapshot,
     store_commit_history,
@@ -81,9 +79,6 @@ __all__ = [
     "store_github_metrics_cache",
     "get_cached_github_data",
     "store_github_data_cache",
-    # Cache cleanup
-    "cleanup_all_caches",
-    "cleanup_cache_index",
     # Time-series functions
     "store_timeseries_snapshot",
     "store_commit_history",

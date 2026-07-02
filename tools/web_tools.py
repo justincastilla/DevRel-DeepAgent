@@ -13,11 +13,8 @@ from config import config
 from exceptions import SearchError
 from utils.logging_utils import get_logger
 from utils.retry_utils import with_retry
-from tools.elasticsearch_tools import (
-    get_cached_search,
-    store_search_cache,
-    store_adoption_signal,
-)
+from tools.cache import get_cached_search, store_search_cache
+from tools.elasticsearch_tools import store_adoption_signal
 
 logger = get_logger(__name__)
 
@@ -59,7 +56,7 @@ def tavily_search(query: str, max_results: int = 10, cache_days: int = 7) -> dic
         Search results with title, url, and content snippet
     """
     # Check cache first
-    cached = get_cached_search(query, max_age_days=cache_days)
+    cached = get_cached_search(query)
     if cached:
         logger.info(f"Using cached results for: {query}")
         cached["cached"] = True
@@ -69,8 +66,8 @@ def tavily_search(query: str, max_results: int = 10, cache_days: int = 7) -> dic
     results = _call_tavily(query, max_results)
     logger.info(f"Found {len(results.get('results', []))} results for query: {query}")
 
-    # Cache the results
-    store_search_cache(query, results, search_type="tavily")
+    # Cache the results (cache_days sets the Redis TTL)
+    store_search_cache(query, results, ttl_days=cache_days)
     results["cached"] = False
     return results
 

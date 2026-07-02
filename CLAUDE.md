@@ -89,7 +89,6 @@ This pattern ensures:
 The elastic-agent subagent connects to the **Elastic Agent Builder** in your Elastic serverless instance. It uses ES|QL tools for:
 - **Semantic search** - Find similar technologies using vector embeddings
 - **Trend analysis** - Query historical snapshots and time-series data
-- **Caching** - Check cached GitHub metrics and web search results
 - **Adoption signals** - Retrieve blog posts, case studies, job postings
 - **Reports** - Access past research reports and discoveries
 
@@ -99,9 +98,10 @@ ES|QL tools are defined in `elastic_agent_tools.md` and created via the Kibana D
 
 Tools in `tools/` are split by domain:
 - `github_tools.py` - GitHub API interactions (`fetch_repo_metrics`, `fetch_recent_issues`, `fetch_repo_discussions`)
-- `elasticsearch_tools.py` - Data persistence, caching, and querying (direct ES client)
+- `elasticsearch_tools.py` - Persistent data storage and querying (direct ES client)
+- `cache.py` - Redis-backed cache for external API results (Tavily search, GitHub metrics, GitHub issues/discussions)
 - `elastic_agent_client.py` - Client for invoking ES|QL tools on the Elastic serverless agent
-- `elastic_subagent_tools.py` - LangChain tools wrapping the Elastic agent client (16 tools)
+- `elastic_subagent_tools.py` - A single LangChain tool (`ask_elastic_agent`) that delegates to the Elastic Agent Builder, which selects and runs its own ES|QL tools internally
 - `scoring_tools.py` - Viability scoring logic (`calculate_viability_score`)
 
 ### GitHub API Optimizations
@@ -132,10 +132,16 @@ stats = get_github_rate_limit_stats()     # Full usage statistics
 
 ### Data Storage
 
-**Elasticsearch Indices:**
+**Redis Cache** (ephemeral, expires via native key TTL — see `tools/cache.py`):
+- `search:<hash>` - Cached Tavily search results (7-day TTL)
+- `gh-metrics:<repo>` - Cached GitHub API responses (24-hour TTL)
+- `gh-data:<repo>:<issues|discussions>` - Cached issues/discussions (24-hour TTL)
+
+Redis expires these keys automatically, so there is no cleanup job or scheduled
+expiry workflow. If Redis is unavailable the app still runs (every lookup is a miss).
+
+**Elasticsearch Indices** (persistent, analytical data):
 - `technology-research` - Main research snapshots with embeddings
-- `web-search-cache` - Cached Tavily search results (7-day TTL)
-- `github-metrics-cache` - Cached GitHub API responses (24-hour TTL)
 - `repo-timeseries` - Point-in-time metrics for trend graphs
 - `commit-history` - Weekly commit aggregates by author
 - `adoption-signals` - Structured web findings (case studies, blog posts)
@@ -149,6 +155,7 @@ stats = get_github_rate_limit_stats()     # Full usage statistics
 All configuration is managed through `config.py`, which loads from `.env`:
 - API keys: `ANTHROPIC_API_KEY`, `TAVILY_API_KEY`, `GITHUB_TOKEN`, `ELASTICSEARCH_API_KEY`
 - Elasticsearch: `ELASTICSEARCH_HOST`
+- Redis cache: `REDIS_URL` (optional - defaults to `redis://localhost:6379/0`; app runs without it)
 - Kibana/Elastic Agent: `KIBANA_URL` (optional - derived from ES host), `KIBANA_API_KEY` (optional - uses ES key)
 - Observability: `LANGSMITH_API_KEY`, `LANGCHAIN_PROJECT`
 
