@@ -56,6 +56,8 @@ not generate ES|QL — each tool runs a fixed, optimized query and returns struc
 | search_adoption_signals   | Get adoption signals for a repo (optionally filtered by signal type)|
 | fetch_latest_report       | Get the most recent research report for a repo (any age)            |
 | fetch_cached_report       | Get a research report for a repo ONLY if fresh within an age window |
+| fetch_subagent_findings   | Get stored subagent analyses (metrics/sentiment/web) within an age  |
+|                           | window — used to decide whether subagent runs can be skipped        |
 | search_past_discoveries   | Get past discovery runs, optionally filtered by use case            |
 | list_discovered_repos     | List all repo URLs seen across past discoveries                     |
 

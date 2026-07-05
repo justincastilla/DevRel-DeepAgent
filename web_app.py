@@ -65,6 +65,7 @@ ELASTIC_TOOL_NAMES = {
     "search_adoption_signals",
     "fetch_latest_report",
     "fetch_cached_report",
+    "fetch_subagent_findings",
     "search_past_discoveries",
     "list_discovered_repos",
 }
@@ -112,6 +113,13 @@ def identify_agent(event: dict) -> str:
     """Identify which agent an event belongs to based on event metadata."""
     tags = event.get("tags", [])
     name = event.get("name", "")
+
+    # store_subagent_findings is shared by three subagents — the caller names
+    # itself in the tool's own "agent" argument, so attribute it from there.
+    if name == "store_subagent_findings":
+        tool_input = event.get("data", {}).get("input", {})
+        if isinstance(tool_input, dict) and tool_input.get("agent"):
+            return tool_input["agent"]
 
     # Tool name is the most reliable signal — check first
     if name in SUBAGENT_TOOL_MAP:
@@ -346,9 +354,12 @@ async def websocket_research(websocket: WebSocket):
                             except (json.JSONDecodeError, ValueError):
                                 pass
                         elif hasattr(output, "content"):
-                            # ToolMessage or similar — content is typically a JSON string
+                            # ToolMessage or similar — content is a JSON string,
+                            # or already a parsed list/dict.
                             raw_content = output.content
-                            if isinstance(raw_content, str):
+                            if isinstance(raw_content, (list, dict)):
+                                output = raw_content
+                            elif isinstance(raw_content, str):
                                 try:
                                     parsed = json.loads(raw_content)
                                     if isinstance(parsed, (dict, list)):

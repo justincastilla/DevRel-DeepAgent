@@ -26,6 +26,7 @@ from .elasticsearch_tools import (
     get_cached_report as _get_cached_report,
     get_past_discoveries as _get_past_discoveries,
     get_all_discovered_repos as _get_all_discovered_repos,
+    get_subagent_findings as _get_subagent_findings,
 )
 
 
@@ -121,6 +122,29 @@ def search_past_discoveries(use_case: Optional[str] = None, days: int = 90) -> l
 
 
 @tool
+def fetch_subagent_findings(
+    repo: str, agent: Optional[str] = None, max_age_days: int = 7
+) -> list:
+    """
+    Get stored subagent analyses (metrics, sentiment, web research) for a
+    repository from prior research runs, within a freshness window. Use this to
+    check whether recent findings exist so subagent runs can be SKIPPED and
+    their prior analysis reused.
+
+    Args:
+        repo: Full repository name (e.g., "langchain-ai/langgraph")
+        agent: Optional filter — "metrics-agent", "sentiment-agent", or
+               "web-research-agent". Omit to get the newest findings per agent.
+        max_age_days: Maximum age in days to count as fresh (default 7)
+
+    Returns:
+        A list of findings dicts (repo, agent, timestamp, findings markdown),
+        newest first, at most one per agent. Empty list if nothing fresh exists.
+    """
+    return _get_subagent_findings(repo, agent=agent, max_age_days=max_age_days)
+
+
+@tool
 def list_discovered_repos() -> list:
     """
     List every unique repository GitHub URL seen across all past technology
@@ -138,6 +162,7 @@ ELASTIC_WRAPPER_TOOLS = [
     search_adoption_signals,
     fetch_latest_report,
     fetch_cached_report,
+    fetch_subagent_findings,
     search_past_discoveries,
     list_discovered_repos,
 ]

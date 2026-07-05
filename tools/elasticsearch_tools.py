@@ -717,6 +717,104 @@ def get_adoption_signals(repo: str, signal_type: str = None, days: int = 90) -> 
 
 
 # =============================================================================
+# SUBAGENT FINDINGS STORAGE - Persist each subagent's narrative analysis
+# =============================================================================
+
+@tool
+def store_subagent_findings(
+    repo: str,
+    agent: str,
+    findings: str,
+    use_case: Optional[str] = None,
+) -> str:
+    """
+    Store your complete final analysis so future research runs can reuse it
+    instead of re-doing the same work. Call this ONCE, just before returning
+    your final answer, with the FULL VERBATIM markdown of your analysis —
+    never a summary or placeholder.
+
+    If your analysis covered multiple repositories, pass them comma-separated —
+    one findings document is stored per repository so each can be found later.
+
+    Args:
+        repo: Full repository name analyzed (e.g., "langchain-ai/langgraph").
+              Multiple repos may be comma-separated; free-form labels won't be findable.
+        agent: Your agent name: "metrics-agent", "sentiment-agent", or "web-research-agent"
+        findings: Your complete final analysis, verbatim markdown
+        use_case: Optional use case context this analysis was done for
+
+    Returns:
+        Confirmation message with document ID
+    """
+    # Retrieval does exact term-matches on repo, so normalize whatever the
+    # model passed ("a,b", "a, b", "a + b") into individual owner/name keys.
+    repos = [r.strip() for part in repo.split(",") for r in part.split("+")]
+    repos = [r for r in repos if r]
+    if not repos:
+        return "Warning: no valid repo name given; findings not stored."
+
+    try:
+        es = get_es_client()
+        timestamp = datetime.utcnow().isoformat()
+        for repo_key in repos:
+            doc = {
+                "repo": repo_key,
+                "agent": agent,
+                "timestamp": timestamp,
+                "use_case": use_case,
+                "findings": findings,
+            }
+            es.index(index="subagent-findings", document=doc)
+        logger.info(
+            f"Stored {agent} findings for {len(repos)} repo(s) "
+            f"({', '.join(repos)}; {len(findings)} chars)"
+        )
+        return f"Stored {agent} findings for {', '.join(repos)}"
+    except Exception as e:
+        # Persistence is best-effort: never fail the research over it.
+        logger.warning(f"Failed to store subagent findings for {repo}: {e}")
+        return f"Warning: could not store findings ({e}); continue with your answer."
+
+
+def get_subagent_findings(
+    repo: str, agent: Optional[str] = None, max_age_days: int = 7
+) -> list:
+    """
+    Retrieve stored subagent analyses for a repository within a freshness window.
+
+    Args:
+        repo: Repository name
+        agent: Optional filter — "metrics-agent", "sentiment-agent", or "web-research-agent"
+        max_age_days: Maximum age in days for findings to count as fresh
+
+    Returns:
+        List of findings docs, newest first (at most one per agent)
+    """
+    since = (datetime.utcnow() - timedelta(days=max_age_days)).isoformat()
+
+    try:
+        es = get_es_client()
+        must_clauses = [
+            {"term": {"repo": repo}},
+            {"range": {"timestamp": {"gte": since}}},
+        ]
+        if agent:
+            must_clauses.append({"term": {"agent": agent}})
+
+        result = es.search(
+            index="subagent-findings",
+            query={"bool": {"must": must_clauses}},
+            collapse={"field": "agent"},  # newest per agent
+            sort=[{"timestamp": "desc"}],
+            size=10,
+        )
+        return [hit["_source"] for hit in result["hits"]["hits"]]
+    except Exception as e:
+        logger.warning(f"Failed to get subagent findings for {repo}: {e}")
+        return []
+
+
+# =============================================================================
 # RESEARCH REPORTS STORAGE - Store final analysis reports
 # =============================================================================
 

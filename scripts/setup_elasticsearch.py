@@ -147,6 +147,19 @@ INDICES = {
             }
         },
     },
+    # Full narrative analyses returned by each research subagent, stored verbatim
+    # so later runs can reuse them instead of re-running the subagent.
+    "subagent-findings": {
+        "mappings": {
+            "properties": {
+                "repo": {"type": "keyword"},
+                "agent": {"type": "keyword"},  # metrics-agent | sentiment-agent | web-research-agent
+                "timestamp": {"type": "date"},
+                "use_case": {"type": "text"},
+                "findings": {"type": "text"},  # the subagent's full markdown analysis
+            }
+        },
+    },
     "research-reports": {
         "mappings": {
             "properties": {

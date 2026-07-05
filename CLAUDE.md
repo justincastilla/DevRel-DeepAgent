@@ -96,6 +96,7 @@ reasons over directly. Capabilities:
 - **Trend analysis** (`get_trend_data`, `search_repo_timeseries`) - Historical snapshots and time-series
 - **Adoption signals** (`search_adoption_signals`) - Blog posts, case studies, job postings
 - **Reports** (`fetch_latest_report`, `fetch_cached_report`) - Past research reports
+- **Subagent findings** (`fetch_subagent_findings`) - Stored per-subagent analyses; the orchestrator reuses fresh ones (metrics <24h, sentiment/web <7d) instead of re-running subagents
 - **Discoveries** (`search_past_discoveries`, `list_discovered_repos`) - Prior discovery runs
 - **Snapshots / tags** (`compare_technologies`, `search_by_tags`) - Latest stored snapshots
 
@@ -157,6 +158,7 @@ expiry workflow. If Redis is unavailable the app still runs (every lookup is a m
 - `commit-history` - Weekly commit aggregates by author
 - `adoption-signals` - Structured web findings (case studies, blog posts)
 - `research-reports` - Final evaluation/comparison reports
+- `subagent-findings` - Each research subagent's full narrative analysis, stored verbatim for freshness-window reuse
 
 **File Output:**
 - `research_reports/` - Markdown reports saved automatically after each evaluation/comparison

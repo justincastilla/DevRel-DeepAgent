@@ -37,6 +37,9 @@ from .elasticsearch_tools import (
     # Adoption signals functions
     store_adoption_signal,
     get_adoption_signals,
+    # Subagent findings functions
+    store_subagent_findings,
+    get_subagent_findings,
     # Research reports functions
     store_research_report,
     get_latest_report,
@@ -55,6 +58,7 @@ from .elastic_search_tools import (
     search_adoption_signals,
     fetch_latest_report,
     fetch_cached_report,
+    fetch_subagent_findings,
     search_past_discoveries,
     list_discovered_repos,
     ELASTIC_WRAPPER_TOOLS,
@@ -100,6 +104,9 @@ __all__ = [
     # Adoption signals functions
     "store_adoption_signal",
     "get_adoption_signals",
+    # Subagent findings functions
+    "store_subagent_findings",
+    "get_subagent_findings",
     # Research reports functions
     "store_research_report",
     "get_latest_report",
@@ -118,6 +125,7 @@ __all__ = [
     "search_adoption_signals",
     "fetch_latest_report",
     "fetch_cached_report",
+    "fetch_subagent_findings",
     "search_past_discoveries",
     "list_discovered_repos",
     "ELASTIC_WRAPPER_TOOLS",

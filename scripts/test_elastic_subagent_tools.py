@@ -41,7 +41,7 @@ def args_for(tool_name: str, repo: str) -> dict:
         return {"repos": [repo]}
     if tool_name == "search_adoption_signals":
         return {"repo": repo}
-    if tool_name in ("fetch_latest_report", "fetch_cached_report"):
+    if tool_name in ("fetch_latest_report", "fetch_cached_report", "fetch_subagent_findings"):
         return {"repo": repo}
     if tool_name == "search_past_discoveries":
         return {}
