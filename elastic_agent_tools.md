@@ -6,6 +6,8 @@ This document defines ES|QL tools to replace direct Elasticsearch client calls w
 
 Each tool below corresponds to a search operation in `tools/elasticsearch_tools.py`. These tools are created via the Kibana Agent Builder API and executed through the Elastic agent.
 
+> **Ephemeral caching moved to Redis.** The former cache tools `get-cached-search` and `get-cached-github-metrics` (and their `web-search-cache` / `github-metrics-cache` / `github-data-cache` indices) have been removed. That caching now lives in Redis (`tools/cache.py`) with native per-key TTLs. The `get-cached-report` tool is unaffected — it reads the persistent `research-reports` index and stays here.
+
 ---
 
 ## Dev Tools API Reference
@@ -97,7 +99,7 @@ POST kbn:/api/agent_builder/tools
     "query": "FROM technology-research METADATA _score | WHERE semantic_content:?description | SORT _score DESC | KEEP repo, timestamp, tags, analysis.viability_score, analysis.summary, _score | LIMIT ?limit",
     "params": {
       "description": {
-        "type": "text",
+        "type": "string",
         "description": "Natural language description of the technology or use case to search for"
       },
       "limit": {
@@ -132,7 +134,7 @@ POST kbn:/api/agent_builder/tools
     "query": "FROM technology-research | WHERE repo == ?repo_name AND timestamp >= ?start_date | SORT timestamp ASC | KEEP repo, timestamp, metrics.stars, metrics.open_issues, analysis.viability_score | LIMIT 100",
     "params": {
       "repo_name": {
-        "type": "keyword",
+        "type": "string",
         "description": "Full repository name (e.g., 'langchain-ai/deepagents')"
       },
       "start_date": {
@@ -165,7 +167,7 @@ POST kbn:/api/agent_builder/tools
     "query": "FROM technology-research | WHERE repo == ?repo_name | SORT timestamp DESC | KEEP repo, timestamp, metrics.stars, metrics.forks, metrics.open_issues, metrics.contributors, analysis.viability_score, analysis.risk_flags | LIMIT 1",
     "params": {
       "repo_name": {
-        "type": "keyword",
+        "type": "string",
         "description": "Full repository name (e.g., 'langchain-ai/deepagents')"
       }
     }
@@ -194,11 +196,11 @@ POST kbn:/api/agent_builder/tools
     "query": "FROM technology-research | WHERE tags LIKE ?tag_pattern AND analysis.viability_score >= ?min_viability | SORT analysis.viability_score DESC, timestamp DESC | KEEP repo, analysis.viability_score, tags, analysis.summary | LIMIT 20",
     "params": {
       "tag_pattern": {
-        "type": "text",
+        "type": "string",
         "description": "Tag pattern to search for (use wildcards like '*ai-agents*')"
       },
       "min_viability": {
-        "type": "double",
+        "type": "float",
         "description": "Minimum viability score filter (0-100, default 0)"
       }
     }
@@ -208,73 +210,17 @@ POST kbn:/api/agent_builder/tools
 
 ---
 
-### 5. Get Cached Search Results
+### 5. Get Cached Search Results — REMOVED (moved to Redis)
 
-**Original Function:** `get_cached_search()` (line 418)
-
-**Purpose:** Check for cached web search results.
-
-**Note:** The `results` field is stored as a disabled object and cannot be queried directly with KEEP. Only metadata fields are queryable.
-
-**Dev Tools Command:**
-
-```json
-POST kbn:/api/agent_builder/tools
-{
-  "id": "get-cached-search",
-  "type": "esql",
-  "description": "Check if cached search results exist for a query hash. Returns cache metadata if found and within max age.",
-  "tags": ["cache", "web-search"],
-  "configuration": {
-    "query": "FROM web-search-cache | WHERE query_hash == ?query_hash AND timestamp >= ?min_timestamp | SORT timestamp DESC | KEEP query, query_hash, timestamp, result_count, search_type | LIMIT 1",
-    "params": {
-      "query_hash": {
-        "type": "keyword",
-        "description": "SHA256 hash of the search query (first 16 chars)"
-      },
-      "min_timestamp": {
-        "type": "date",
-        "description": "Minimum timestamp for cache validity in ISO format"
-      }
-    }
-  }
-}
-```
+**Removed.** Ephemeral web-search caching moved from the `web-search-cache` Elasticsearch index to Redis (`tools/cache.py`, key `search:<hash>`). This ES|QL tool and its backing index no longer exist. Do **not** create it.
 
 ---
 
-### 6. Get Cached GitHub Metrics
+### 6. Get Cached GitHub Metrics — REMOVED (moved to Redis)
 
-**Original Function:** `get_cached_github_metrics()` (line 486)
+**Removed.** Ephemeral GitHub-metrics caching moved from the `github-metrics-cache` Elasticsearch index to Redis (`tools/cache.py`, key `gh-metrics:<repo>`). This ES|QL tool and its backing index no longer exist. Do **not** create it.
 
-**Purpose:** Check for cached GitHub metrics for a repository.
-
-**Note:** The `metrics` and `derived` fields are stored as disabled objects and cannot be queried directly. Only repo and timestamp are queryable. Use this to check cache existence, then fetch full document via document API if needed.
-
-**Dev Tools Command:**
-
-```json
-POST kbn:/api/agent_builder/tools
-{
-  "id": "get-cached-github-metrics",
-  "type": "esql",
-  "description": "Check if cached GitHub metrics exist for a repository. Returns cache metadata (repo and timestamp) if found within max age.",
-  "tags": ["cache", "github-metrics"],
-  "configuration": {
-    "query": "FROM github-metrics-cache | WHERE repo == ?repo_name AND timestamp >= ?min_timestamp | SORT timestamp DESC | KEEP repo, timestamp | LIMIT 1",
-    "params": {
-      "repo_name": {
-        "type": "keyword",
-        "description": "Full repository name (e.g., 'langchain-ai/deepagents')"
-      },
-      "min_timestamp": {
-        "type": "date",
-        "description": "Minimum timestamp for cache validity in ISO format"
-      }
-    }
-  }
-}
-```
+> Note: "Get Cached Report" (#10, `get-cached-report`) is **not** affected — it reads the persistent `research-reports` index, not an ephemeral cache, and stays in Elasticsearch.
 
 ---
 
@@ -297,7 +243,7 @@ POST kbn:/api/agent_builder/tools
     "query": "FROM repo-timeseries | WHERE repo == ?repo_name AND timestamp >= ?start_date | SORT timestamp ASC | KEEP repo, timestamp, stars, forks, open_issues, commits_week, commits_month, issue_close_rate, pr_merge_rate | LIMIT 1000",
     "params": {
       "repo_name": {
-        "type": "keyword",
+        "type": "string",
         "description": "Full repository name (e.g., 'langchain-ai/deepagents')"
       },
       "start_date": {
@@ -322,7 +268,7 @@ POST kbn:/api/agent_builder/tools
     "query": "FROM repo-timeseries | WHERE repo == ?repo_name AND timestamp >= ?start_date | STATS avg_stars = AVG(stars), max_stars = MAX(stars), min_stars = MIN(stars), avg_commits_week = AVG(commits_week), snapshot_count = COUNT(*) BY repo",
     "params": {
       "repo_name": {
-        "type": "keyword",
+        "type": "string",
         "description": "Full repository name"
       },
       "start_date": {
@@ -355,7 +301,7 @@ POST kbn:/api/agent_builder/tools
     "query": "FROM adoption-signals | WHERE repo == ?repo_name AND timestamp >= ?start_date | SORT timestamp DESC | KEEP repo, timestamp, signal_type, source_url, source_title, company_mentioned, sentiment, snippet | LIMIT 100",
     "params": {
       "repo_name": {
-        "type": "keyword",
+        "type": "string",
         "description": "Full repository name"
       },
       "start_date": {
@@ -380,11 +326,11 @@ POST kbn:/api/agent_builder/tools
     "query": "FROM adoption-signals | WHERE repo == ?repo_name AND signal_type == ?signal_type AND timestamp >= ?start_date | SORT timestamp DESC | KEEP repo, timestamp, signal_type, source_title, source_url, company_mentioned, sentiment, snippet | LIMIT 50",
     "params": {
       "repo_name": {
-        "type": "keyword",
+        "type": "string",
         "description": "Full repository name"
       },
       "signal_type": {
-        "type": "keyword",
+        "type": "string",
         "description": "Signal type: blog_post, case_study, conference_talk, or job_posting"
       },
       "start_date": {
@@ -409,7 +355,7 @@ POST kbn:/api/agent_builder/tools
     "query": "FROM adoption-signals | WHERE repo == ?repo_name AND timestamp >= ?start_date | STATS count = COUNT(*) BY signal_type | SORT count DESC",
     "params": {
       "repo_name": {
-        "type": "keyword",
+        "type": "string",
         "description": "Full repository name"
       },
       "start_date": {
@@ -442,7 +388,7 @@ POST kbn:/api/agent_builder/tools
     "query": "FROM research-reports | WHERE repo == ?repo_name | SORT timestamp DESC | KEEP repo, timestamp, report_type, viability_score, recommendation, risk_flags, summary, full_report | LIMIT 1",
     "params": {
       "repo_name": {
-        "type": "keyword",
+        "type": "string",
         "description": "Full repository name"
       }
     }
@@ -471,7 +417,7 @@ POST kbn:/api/agent_builder/tools
     "query": "FROM research-reports | WHERE repo == ?repo_name AND timestamp >= ?min_timestamp | SORT timestamp DESC | KEEP repo, timestamp, report_type, viability_score, health_score, community_score, adoption_score, recommendation, summary | LIMIT 1",
     "params": {
       "repo_name": {
-        "type": "keyword",
+        "type": "string",
         "description": "Full repository name"
       },
       "min_timestamp": {
@@ -527,7 +473,7 @@ POST kbn:/api/agent_builder/tools
     "query": "FROM technology-discoveries | WHERE use_case LIKE ?use_case_pattern AND timestamp >= ?start_date | SORT timestamp DESC | KEEP timestamp, use_case, technology_count, technologies.name, technologies.github_url, technologies.stars | LIMIT 20",
     "params": {
       "use_case_pattern": {
-        "type": "text",
+        "type": "string",
         "description": "Use case pattern to search for (use wildcards like '*AI agents*')"
       },
       "start_date": {
@@ -570,13 +516,13 @@ POST kbn:/api/agent_builder/tools
 | Index                    | Purpose                                      |
 | ------------------------ | -------------------------------------------- |
 | `technology-research`    | Main research snapshots with embeddings      |
-| `web-search-cache`       | Cached Tavily search results (7-day TTL)     |
-| `github-metrics-cache`   | Cached GitHub API responses (24-hour TTL)    |
 | `repo-timeseries`        | Point-in-time metrics for trend graphs       |
 | `commit-history`         | Weekly commit aggregates by author           |
 | `adoption-signals`       | Structured web findings                      |
 | `research-reports`       | Final evaluation/comparison reports          |
 | `technology-discoveries` | Discovered technologies by use case          |
+
+> The former `web-search-cache`, `github-metrics-cache`, and `github-data-cache` indices were removed; ephemeral caching now lives in Redis (`tools/cache.py`).
 
 ---
 
@@ -589,43 +535,38 @@ Run all tool creations in Dev Tools Console.
 ```bash
 # 1. Find Similar Technologies
 POST kbn:/api/agent_builder/tools
-{"id":"find-similar-technologies","type":"esql","description":"Use semantic search to find technologies similar to a given description.","tags":["search","semantic","technology-research"],"configuration":{"query":"FROM technology-research METADATA _score | WHERE semantic_content:?description | SORT _score DESC | KEEP repo, timestamp, tags, analysis.viability_score, analysis.summary, _score | LIMIT ?limit","params":{"description":{"type":"text","description":"Natural language description of the technology or use case"},"limit":{"type":"integer","description":"Maximum results (default 5)"}}}}
+{"id":"find-similar-technologies","type":"esql","description":"Use semantic search to find technologies similar to a given description.","tags":["search","semantic","technology-research"],"configuration":{"query":"FROM technology-research METADATA _score | WHERE semantic_content:?description | SORT _score DESC | KEEP repo, timestamp, tags, analysis.viability_score, analysis.summary, _score | LIMIT ?limit","params":{"description":{"type":"string","description":"Natural language description of the technology or use case"},"limit":{"type":"integer","description":"Maximum results (default 5)"}}}}
 
 # 2. Get Trend Data
 POST kbn:/api/agent_builder/tools
-{"id":"get-trend-data","type":"esql","description":"Retrieve historical snapshots for trend analysis.","tags":["trends","analytics"],"configuration":{"query":"FROM technology-research | WHERE repo == ?repo_name AND timestamp >= ?start_date | SORT timestamp ASC | KEEP repo, timestamp, metrics.stars, metrics.open_issues, analysis.viability_score | LIMIT 100","params":{"repo_name":{"type":"keyword","description":"Full repository name"},"start_date":{"type":"date","description":"Start date in ISO format"}}}}
+{"id":"get-trend-data","type":"esql","description":"Retrieve historical snapshots for trend analysis.","tags":["trends","analytics"],"configuration":{"query":"FROM technology-research | WHERE repo == ?repo_name AND timestamp >= ?start_date | SORT timestamp ASC | KEEP repo, timestamp, metrics.stars, metrics.open_issues, analysis.viability_score | LIMIT 100","params":{"repo_name":{"type":"string","description":"Full repository name"},"start_date":{"type":"date","description":"Start date in ISO format"}}}}
 
 # 3. Get Latest Snapshot (for comparisons)
 POST kbn:/api/agent_builder/tools
-{"id":"get-latest-snapshot","type":"esql","description":"Get the most recent research snapshot for a repository.","tags":["comparison","snapshot"],"configuration":{"query":"FROM technology-research | WHERE repo == ?repo_name | SORT timestamp DESC | KEEP repo, timestamp, metrics.stars, metrics.forks, metrics.open_issues, metrics.contributors, analysis.viability_score, analysis.risk_flags | LIMIT 1","params":{"repo_name":{"type":"keyword","description":"Full repository name"}}}}
+{"id":"get-latest-snapshot","type":"esql","description":"Get the most recent research snapshot for a repository.","tags":["comparison","snapshot"],"configuration":{"query":"FROM technology-research | WHERE repo == ?repo_name | SORT timestamp DESC | KEEP repo, timestamp, metrics.stars, metrics.forks, metrics.open_issues, metrics.contributors, analysis.viability_score, analysis.risk_flags | LIMIT 1","params":{"repo_name":{"type":"string","description":"Full repository name"}}}}
 
 # 4. Search by Tags
 POST kbn:/api/agent_builder/tools
-{"id":"search-by-tags","type":"esql","description":"Search technologies by tags with viability filter.","tags":["search","tags"],"configuration":{"query":"FROM technology-research | WHERE tags LIKE ?tag_pattern AND analysis.viability_score >= ?min_viability | SORT analysis.viability_score DESC, timestamp DESC | KEEP repo, analysis.viability_score, tags, analysis.summary | LIMIT 20","params":{"tag_pattern":{"type":"text","description":"Tag pattern (use wildcards)"},"min_viability":{"type":"double","description":"Minimum viability score (0-100)"}}}}
+{"id":"search-by-tags","type":"esql","description":"Search technologies by tags with viability filter.","tags":["search","tags"],"configuration":{"query":"FROM technology-research | WHERE tags LIKE ?tag_pattern AND analysis.viability_score >= ?min_viability | SORT analysis.viability_score DESC, timestamp DESC | KEEP repo, analysis.viability_score, tags, analysis.summary | LIMIT 20","params":{"tag_pattern":{"type":"string","description":"Tag pattern (use wildcards)"},"min_viability":{"type":"float","description":"Minimum viability score (0-100)"}}}}
 
-# 5. Get Cached Search (note: results field is disabled, only metadata queryable)
-POST kbn:/api/agent_builder/tools
-{"id":"get-cached-search","type":"esql","description":"Check for cached web search results.","tags":["cache","web-search"],"configuration":{"query":"FROM web-search-cache | WHERE query_hash == ?query_hash AND timestamp >= ?min_timestamp | SORT timestamp DESC | KEEP query, query_hash, timestamp, result_count, search_type | LIMIT 1","params":{"query_hash":{"type":"keyword","description":"SHA256 hash of query (first 16 chars)"},"min_timestamp":{"type":"date","description":"Minimum timestamp in ISO format"}}}}
-
-# 6. Get Cached GitHub Metrics (note: metrics/derived fields are disabled, only repo/timestamp queryable)
-POST kbn:/api/agent_builder/tools
-{"id":"get-cached-github-metrics","type":"esql","description":"Check for cached GitHub metrics.","tags":["cache","github"],"configuration":{"query":"FROM github-metrics-cache | WHERE repo == ?repo_name AND timestamp >= ?min_timestamp | SORT timestamp DESC | KEEP repo, timestamp | LIMIT 1","params":{"repo_name":{"type":"keyword","description":"Full repository name"},"min_timestamp":{"type":"date","description":"Minimum timestamp in ISO format"}}}}
+# 5. Get Cached Search — REMOVED (ephemeral caching moved to Redis, tools/cache.py)
+# 6. Get Cached GitHub Metrics — REMOVED (ephemeral caching moved to Redis, tools/cache.py)
 
 # 7. Get Repo Time Series
 POST kbn:/api/agent_builder/tools
-{"id":"get-repo-timeseries","type":"esql","description":"Retrieve time-series metrics for trend visualization.","tags":["timeseries","metrics"],"configuration":{"query":"FROM repo-timeseries | WHERE repo == ?repo_name AND timestamp >= ?start_date | SORT timestamp ASC | KEEP repo, timestamp, stars, forks, open_issues, commits_week, commits_month, issue_close_rate, pr_merge_rate | LIMIT 1000","params":{"repo_name":{"type":"keyword","description":"Full repository name"},"start_date":{"type":"date","description":"Start date in ISO format"}}}}
+{"id":"get-repo-timeseries","type":"esql","description":"Retrieve time-series metrics for trend visualization.","tags":["timeseries","metrics"],"configuration":{"query":"FROM repo-timeseries | WHERE repo == ?repo_name AND timestamp >= ?start_date | SORT timestamp ASC | KEEP repo, timestamp, stars, forks, open_issues, commits_week, commits_month, issue_close_rate, pr_merge_rate | LIMIT 1000","params":{"repo_name":{"type":"string","description":"Full repository name"},"start_date":{"type":"date","description":"Start date in ISO format"}}}}
 
 # 8. Get Adoption Signals
 POST kbn:/api/agent_builder/tools
-{"id":"get-adoption-signals","type":"esql","description":"Retrieve adoption signals for a repository.","tags":["adoption","signals"],"configuration":{"query":"FROM adoption-signals | WHERE repo == ?repo_name AND timestamp >= ?start_date | SORT timestamp DESC | KEEP repo, timestamp, signal_type, source_url, source_title, company_mentioned, sentiment, snippet | LIMIT 100","params":{"repo_name":{"type":"keyword","description":"Full repository name"},"start_date":{"type":"date","description":"Start date in ISO format"}}}}
+{"id":"get-adoption-signals","type":"esql","description":"Retrieve adoption signals for a repository.","tags":["adoption","signals"],"configuration":{"query":"FROM adoption-signals | WHERE repo == ?repo_name AND timestamp >= ?start_date | SORT timestamp DESC | KEEP repo, timestamp, signal_type, source_url, source_title, company_mentioned, sentiment, snippet | LIMIT 100","params":{"repo_name":{"type":"string","description":"Full repository name"},"start_date":{"type":"date","description":"Start date in ISO format"}}}}
 
 # 9. Get Latest Report
 POST kbn:/api/agent_builder/tools
-{"id":"get-latest-report","type":"esql","description":"Get the most recent research report for a repository.","tags":["reports","research"],"configuration":{"query":"FROM research-reports | WHERE repo == ?repo_name | SORT timestamp DESC | KEEP repo, timestamp, report_type, viability_score, recommendation, risk_flags, summary, full_report | LIMIT 1","params":{"repo_name":{"type":"keyword","description":"Full repository name"}}}}
+{"id":"get-latest-report","type":"esql","description":"Get the most recent research report for a repository.","tags":["reports","research"],"configuration":{"query":"FROM research-reports | WHERE repo == ?repo_name | SORT timestamp DESC | KEEP repo, timestamp, report_type, viability_score, recommendation, risk_flags, summary, full_report | LIMIT 1","params":{"repo_name":{"type":"string","description":"Full repository name"}}}}
 
 # 10. Get Cached Report
 POST kbn:/api/agent_builder/tools
-{"id":"get-cached-report","type":"esql","description":"Get a cached research report within age limit.","tags":["reports","cache"],"configuration":{"query":"FROM research-reports | WHERE repo == ?repo_name AND timestamp >= ?min_timestamp | SORT timestamp DESC | KEEP repo, timestamp, report_type, viability_score, health_score, community_score, adoption_score, recommendation, summary | LIMIT 1","params":{"repo_name":{"type":"keyword","description":"Full repository name"},"min_timestamp":{"type":"date","description":"Minimum timestamp in ISO format"}}}}
+{"id":"get-cached-report","type":"esql","description":"Get a cached research report within age limit.","tags":["reports","cache"],"configuration":{"query":"FROM research-reports | WHERE repo == ?repo_name AND timestamp >= ?min_timestamp | SORT timestamp DESC | KEEP repo, timestamp, report_type, viability_score, health_score, community_score, adoption_score, recommendation, summary | LIMIT 1","params":{"repo_name":{"type":"string","description":"Full repository name"},"min_timestamp":{"type":"date","description":"Minimum timestamp in ISO format"}}}}
 
 # 11. Get Past Discoveries (note: technologies is nested, use sub-fields)
 POST kbn:/api/agent_builder/tools
@@ -633,19 +574,19 @@ POST kbn:/api/agent_builder/tools
 
 # 12. Search Discoveries by Use Case
 POST kbn:/api/agent_builder/tools
-{"id":"search-discoveries-by-use-case","type":"esql","description":"Search past discoveries by use case.","tags":["discoveries","search"],"configuration":{"query":"FROM technology-discoveries | WHERE use_case LIKE ?use_case_pattern AND timestamp >= ?start_date | SORT timestamp DESC | KEEP timestamp, use_case, technology_count, technologies.name, technologies.github_url, technologies.stars | LIMIT 20","params":{"use_case_pattern":{"type":"text","description":"Use case pattern (use wildcards)"},"start_date":{"type":"date","description":"Start date in ISO format"}}}}
+{"id":"search-discoveries-by-use-case","type":"esql","description":"Search past discoveries by use case.","tags":["discoveries","search"],"configuration":{"query":"FROM technology-discoveries | WHERE use_case LIKE ?use_case_pattern AND timestamp >= ?start_date | SORT timestamp DESC | KEEP timestamp, use_case, technology_count, technologies.name, technologies.github_url, technologies.stars | LIMIT 20","params":{"use_case_pattern":{"type":"string","description":"Use case pattern (use wildcards)"},"start_date":{"type":"date","description":"Start date in ISO format"}}}}
 
 # 13. Count Adoption Signals
 POST kbn:/api/agent_builder/tools
-{"id":"count-adoption-signals","type":"esql","description":"Count adoption signals by type for a repository.","tags":["adoption","stats"],"configuration":{"query":"FROM adoption-signals | WHERE repo == ?repo_name AND timestamp >= ?start_date | STATS count = COUNT(*) BY signal_type | SORT count DESC","params":{"repo_name":{"type":"keyword","description":"Full repository name"},"start_date":{"type":"date","description":"Start date in ISO format"}}}}
+{"id":"count-adoption-signals","type":"esql","description":"Count adoption signals by type for a repository.","tags":["adoption","stats"],"configuration":{"query":"FROM adoption-signals | WHERE repo == ?repo_name AND timestamp >= ?start_date | STATS count = COUNT(*) BY signal_type | SORT count DESC","params":{"repo_name":{"type":"string","description":"Full repository name"},"start_date":{"type":"date","description":"Start date in ISO format"}}}}
 
 # 14. Get Repo Time Series Stats
 POST kbn:/api/agent_builder/tools
-{"id":"get-repo-timeseries-stats","type":"esql","description":"Get aggregated statistics for repository time-series data.","tags":["timeseries","stats"],"configuration":{"query":"FROM repo-timeseries | WHERE repo == ?repo_name AND timestamp >= ?start_date | STATS avg_stars = AVG(stars), max_stars = MAX(stars), min_stars = MIN(stars), avg_commits_week = AVG(commits_week), snapshot_count = COUNT(*) BY repo","params":{"repo_name":{"type":"keyword","description":"Full repository name"},"start_date":{"type":"date","description":"Start date in ISO format"}}}}
+{"id":"get-repo-timeseries-stats","type":"esql","description":"Get aggregated statistics for repository time-series data.","tags":["timeseries","stats"],"configuration":{"query":"FROM repo-timeseries | WHERE repo == ?repo_name AND timestamp >= ?start_date | STATS avg_stars = AVG(stars), max_stars = MAX(stars), min_stars = MIN(stars), avg_commits_week = AVG(commits_week), snapshot_count = COUNT(*) BY repo","params":{"repo_name":{"type":"string","description":"Full repository name"},"start_date":{"type":"date","description":"Start date in ISO format"}}}}
 
 # 15. Get Adoption Signals by Type (note: no use_case field in adoption-signals)
 POST kbn:/api/agent_builder/tools
-{"id":"get-adoption-signals-by-type","type":"esql","description":"Retrieve adoption signals filtered by type.","tags":["adoption","signals","filtered"],"configuration":{"query":"FROM adoption-signals | WHERE repo == ?repo_name AND signal_type == ?signal_type AND timestamp >= ?start_date | SORT timestamp DESC | KEEP repo, timestamp, signal_type, source_title, source_url, company_mentioned, sentiment, snippet | LIMIT 50","params":{"repo_name":{"type":"keyword","description":"Full repository name"},"signal_type":{"type":"keyword","description":"Signal type: blog_post, case_study, conference_talk, job_posting"},"start_date":{"type":"date","description":"Start date in ISO format"}}}}
+{"id":"get-adoption-signals-by-type","type":"esql","description":"Retrieve adoption signals filtered by type.","tags":["adoption","signals","filtered"],"configuration":{"query":"FROM adoption-signals | WHERE repo == ?repo_name AND signal_type == ?signal_type AND timestamp >= ?start_date | SORT timestamp DESC | KEEP repo, timestamp, signal_type, source_title, source_url, company_mentioned, sentiment, snippet | LIMIT 50","params":{"repo_name":{"type":"string","description":"Full repository name"},"signal_type":{"type":"string","description":"Signal type: blog_post, case_study, conference_talk, job_posting"},"start_date":{"type":"date","description":"Start date in ISO format"}}}}
 
 # 16. Get All Discovered Repos
 POST kbn:/api/agent_builder/tools
@@ -672,6 +613,6 @@ POST kbn:/api/agent_builder/tools
 
 7. **Date Math in Static Queries:** Date math like `NOW() - 90 days` works in static queries but not with parameterized values.
 
-8. **Disabled Object Fields:** Some indices have fields mapped with `"enabled": false` (e.g., `results` in web-search-cache, `metrics`/`derived` in github-metrics-cache). These fields are stored but cannot be queried with KEEP. Use the document API to retrieve full documents when needed.
+8. **Disabled Object Fields:** Some indices have fields mapped with `"enabled": false`. These fields are stored but cannot be queried with KEEP. Use the document API to retrieve full documents when needed.
 
 9. **Nested Object Fields:** For indices with nested objects (e.g., `technologies` in technology-discoveries), access sub-fields using dot notation: `technologies.name`, `technologies.github_url`, etc.

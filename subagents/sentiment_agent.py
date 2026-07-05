@@ -2,7 +2,11 @@
 Sentiment SubAgent - Specialized agent for community sentiment analysis.
 """
 
-from tools import fetch_recent_issues, fetch_repo_discussions, store_research_snapshot
+from tools import (
+    fetch_recent_issues,
+    fetch_repo_discussions,
+    store_subagent_findings,
+)
 
 sentiment_subagent = {
     "name": "sentiment-agent",
@@ -16,7 +20,12 @@ Assess the health of a project's community through issues and discussions.
 1. Fetch recent issues using fetch_recent_issues
 2. Fetch discussions using fetch_repo_discussions (if available)
 3. Analyze content for sentiment and patterns
-4. Store findings using store_research_snapshot
+4. Store your COMPLETE final analysis verbatim with
+   store_subagent_findings(repo=..., agent="sentiment-agent", findings=<your full markdown analysis>)
+   so future runs can reuse it — then return that same analysis as your answer
+
+NOTE: Do NOT store metrics snapshots — that is the metrics-agent's job; you do not
+have real values for stars/forks/contributors and must never invent them.
 
 ## Sentiment Classification
 For each issue/discussion, classify as:
@@ -85,5 +94,9 @@ Analyzed [N] issues and [M] discussions from the past [X] days.
 - Don't over-interpret limited data
 - Note when sample size is too small for confident assessment
 - Flag potential false positives (e.g., "abandoned" in different context)""",
-    "tools": [fetch_recent_issues, fetch_repo_discussions, store_research_snapshot],
+    "tools": [
+        fetch_recent_issues,
+        fetch_repo_discussions,
+        store_subagent_findings,
+    ],
 }

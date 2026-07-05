@@ -76,44 +76,18 @@ INDICES = {
             },
             "semantic_content": {
                 "type": "semantic_text",
-                "inference_id": "devrel-elser-endpoint"
+                # Preconfigured, serverless-native ELSER endpoint (sparse_embedding,
+                # adaptive allocations, zero management). Avoids deploying a custom
+                # ELSER model. Override via SEMANTIC_INFERENCE_ID if you provisioned
+                # your own endpoint.
+                "inference_id": config.SEMANTIC_INFERENCE_ID
             }
         }
         },
     },
-    "web-search-cache": {
-        "mappings": {
-            "properties": {
-                "query": {"type": "text"},
-                "query_hash": {"type": "keyword"},
-                "timestamp": {"type": "date"},
-                "results": {"type": "object", "enabled": False},  # Store raw JSON without indexing
-                "result_count": {"type": "integer"},
-                "search_type": {"type": "keyword"},  # e.g., "tavily", "github_issues"
-            }
-        },
-    },
-    "github-metrics-cache": {
-        "mappings": {
-            "properties": {
-                "repo": {"type": "keyword"},
-                "timestamp": {"type": "date"},
-                "metrics": {"type": "object", "enabled": False},  # Raw metrics JSON
-                "derived": {"type": "object", "enabled": False},  # Derived calculations
-            }
-        },
-    },
-    "github-data-cache": {
-        "mappings": {
-            "properties": {
-                "repo": {"type": "keyword"},
-                "data_type": {"type": "keyword"},  # "issues" or "discussions"
-                "timestamp": {"type": "date"},
-                "json_data": {"type": "object", "enabled": False},  # Raw JSON, not indexed
-                "count": {"type": "integer"},
-            }
-        },
-    },
+    # NOTE: Ephemeral API caches (web search, GitHub metrics, GitHub issues/
+    # discussions) are no longer Elasticsearch indices — they live in Redis
+    # (see tools/cache.py), which expires them automatically via key TTL.
     "repo-timeseries": {
         "mappings": {
             "properties": {
@@ -170,6 +144,19 @@ INDICES = {
                 # Search metadata
                 "search_query": {"type": "text"},
                 "relevance_score": {"type": "float"},
+            }
+        },
+    },
+    # Full narrative analyses returned by each research subagent, stored verbatim
+    # so later runs can reuse them instead of re-running the subagent.
+    "subagent-findings": {
+        "mappings": {
+            "properties": {
+                "repo": {"type": "keyword"},
+                "agent": {"type": "keyword"},  # metrics-agent | sentiment-agent | web-research-agent
+                "timestamp": {"type": "date"},
+                "use_case": {"type": "text"},
+                "findings": {"type": "text"},  # the subagent's full markdown analysis
             }
         },
     },

@@ -2,7 +2,7 @@
 Metrics SubAgent - Specialized agent for GitHub repository metrics analysis.
 """
 
-from tools import fetch_repo_metrics, store_research_snapshot
+from tools import fetch_repo_metrics, store_research_snapshot, store_subagent_findings
 
 metrics_subagent = {
     "name": "metrics-agent",
@@ -17,6 +17,9 @@ Analyze repository health through quantitative metrics from the GitHub API.
 2. Analyze the raw metrics and derived calculations
 3. Store the snapshot using store_research_snapshot for historical tracking
 4. Identify any concerning patterns or positive signals
+5. Store your COMPLETE final analysis verbatim with
+   store_subagent_findings(repo=..., agent="metrics-agent", findings=<your full markdown analysis>)
+   so future runs can reuse it — then return that same analysis as your answer
 
 ## What to Look For
 
@@ -83,5 +86,5 @@ Always return a structured analysis with ALL numbers and URLs:
 ```
 
 IMPORTANT: Include EVERY metric returned by the API. Do not summarize or skip numbers.""",
-    "tools": [fetch_repo_metrics, store_research_snapshot],
+    "tools": [fetch_repo_metrics, store_research_snapshot, store_subagent_findings],
 }

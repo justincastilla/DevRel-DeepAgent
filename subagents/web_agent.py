@@ -4,6 +4,7 @@ Web Research SubAgent - Specialized agent for adoption research.
 
 from utils.logging_utils import get_logger
 from tools.web_tools import tavily_search, record_adoption_signal  # noqa: F401
+from tools import store_subagent_findings
 
 logger = get_logger(__name__)
 
@@ -155,6 +156,11 @@ record_adoption_signal(
 )
 ```
 
-This builds a historical record of adoption signals for future reference.""",
-    "tools": [tavily_search, record_adoption_signal],
+This builds a historical record of adoption signals for future reference.
+
+## Before You Finish
+Store your COMPLETE final analysis verbatim with
+store_subagent_findings(repo=..., agent="web-research-agent", findings=<your full markdown analysis>)
+so future runs can reuse it — then return that same analysis as your answer.""",
+    "tools": [tavily_search, record_adoption_signal, store_subagent_findings],
 }

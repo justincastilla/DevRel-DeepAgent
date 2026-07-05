@@ -2,7 +2,6 @@
 Elasticsearch tools for storing and querying technology research data.
 """
 
-import hashlib
 import json
 from datetime import datetime, timedelta
 from typing import Optional
@@ -265,8 +264,8 @@ def find_similar_technologies(description: str, limit: int = 5) -> list:
 
         similar_tech = [
             {
-                "repo": hit["_source"]["repo"],
-                "timestamp": hit["_source"]["timestamp"],
+                "repo": hit["_source"].get("repo"),
+                "timestamp": hit["_source"].get("timestamp"),
                 "metrics": hit["_source"].get("metrics", {}),
                 "analysis": hit["_source"].get("analysis", {}),
                 "tags": hit["_source"].get("tags", []),
@@ -485,250 +484,9 @@ def search_by_tags(tags: list[str], min_viability: float = 0) -> list:
         raise ElasticsearchError(f"Failed to search by tags: {e}") from e
 
 
-# =============================================================================
-# CACHING FUNCTIONS - Reduce API costs by caching results in Elasticsearch
-# =============================================================================
-
-def _hash_query(query: str) -> str:
-    """Generate a hash for a search query."""
-    return hashlib.sha256(query.lower().strip().encode()).hexdigest()[:16]
-
-
-def get_cached_search(query: str, max_age_days: int = 7) -> Optional[dict]:
-    """
-    Check if we have cached search results for a query.
-
-    Args:
-        query: The search query
-        max_age_days: Maximum age of cached results in days
-
-    Returns:
-        Cached results if found and fresh, None otherwise
-    """
-    query_hash = _hash_query(query)
-    since = (datetime.utcnow() - timedelta(days=max_age_days)).isoformat()
-
-    try:
-        es = get_es_client()
-        result = es.search(
-            index="web-search-cache",
-            query={
-                "bool": {
-                    "must": [
-                        {"term": {"query_hash": query_hash}},
-                        {"range": {"timestamp": {"gte": since}}},
-                    ]
-                }
-            },
-            sort=[{"timestamp": "desc"}],
-            size=1,
-        )
-
-        if result["hits"]["hits"]:
-            cached = result["hits"]["hits"][0]["_source"]
-            logger.info(f"Cache HIT for query: {query[:50]}... (age: {cached['timestamp']})")
-            return cached["results"]
-
-        logger.info(f"Cache MISS for query: {query[:50]}...")
-        return None
-
-    except Exception as e:
-        logger.warning(f"Cache lookup failed (continuing without cache): {e}")
-        return None
-
-
-def store_search_cache(query: str, results: dict, search_type: str = "tavily") -> None:
-    """
-    Store search results in cache.
-
-    Args:
-        query: The search query
-        results: The search results to cache
-        search_type: Type of search (e.g., "tavily", "github_issues")
-    """
-    try:
-        es = get_es_client()
-        doc = {
-            "query": query,
-            "query_hash": _hash_query(query),
-            "timestamp": datetime.utcnow().isoformat(),
-            "results": results,
-            "result_count": len(results.get("results", [])) if isinstance(results, dict) else 0,
-            "search_type": search_type,
-        }
-        es.index(index="web-search-cache", document=doc)
-        logger.info(f"Cached search results for: {query[:50]}...")
-    except Exception as e:
-        logger.warning(f"Failed to cache search results (continuing): {e}")
-
-
-def get_cached_github_metrics(repo: str, max_age_hours: int = 24) -> Optional[dict]:
-    """
-    Check if we have cached GitHub metrics for a repository.
-
-    Args:
-        repo: Repository name (owner/repo)
-        max_age_hours: Maximum age of cached metrics in hours
-
-    Returns:
-        Cached metrics if found and fresh, None otherwise
-    """
-    since = (datetime.utcnow() - timedelta(hours=max_age_hours)).isoformat()
-
-    try:
-        es = get_es_client()
-        result = es.search(
-            index="github-metrics-cache",
-            query={
-                "bool": {
-                    "must": [
-                        {"term": {"repo": repo}},
-                        {"range": {"timestamp": {"gte": since}}},
-                    ]
-                }
-            },
-            sort=[{"timestamp": "desc"}],
-            size=1,
-        )
-
-        if result["hits"]["hits"]:
-            cached = result["hits"]["hits"][0]["_source"]
-            logger.info(f"GitHub cache HIT for {repo} (age: {cached['timestamp']})")
-            metrics = cached["metrics"]
-            derived = cached.get("derived", {})
-
-            # Workflow-refreshed cache entries store raw counts but not rates.
-            # Compute rates here so downstream scoring gets correct values.
-            if derived.get("issue_close_rate", 0) == 0:
-                open_i = metrics.get("open_issues", 0)
-                closed_i = metrics.get("closed_issues", 0)
-                total_i = open_i + closed_i
-                if total_i > 0:
-                    derived["issue_close_rate"] = round(closed_i / total_i * 100, 1)
-
-            if derived.get("pr_merge_rate", 0) == 0:
-                open_p = metrics.get("open_prs", 0)
-                merged_p = metrics.get("merged_prs", 0)
-                total_p = open_p + merged_p
-                if total_p > 0:
-                    derived["pr_merge_rate"] = round(merged_p / total_p * 100, 1)
-
-            return {
-                "metrics": metrics,
-                "derived": derived,
-                "cached": True,
-                "cache_timestamp": cached["timestamp"],
-            }
-
-        logger.info(f"GitHub cache MISS for {repo}")
-        return None
-
-    except Exception as e:
-        logger.warning(f"GitHub cache lookup failed (continuing without cache): {e}")
-        return None
-
-
-def store_github_metrics_cache(repo: str, metrics: dict, derived: dict = None) -> None:
-    """
-    Store GitHub metrics in cache.
-
-    Args:
-        repo: Repository name (owner/repo)
-        metrics: Raw metrics from GitHub API
-        derived: Derived calculations
-    """
-    try:
-        es = get_es_client()
-        doc = {
-            "repo": repo,
-            "timestamp": datetime.utcnow().isoformat(),
-            "metrics": metrics,
-            "derived": derived or {},
-        }
-        es.index(index="github-metrics-cache", document=doc)
-        logger.info(f"Cached GitHub metrics for {repo}")
-    except Exception as e:
-        logger.warning(f"Failed to cache GitHub metrics (continuing): {e}")
-
-
-def get_cached_github_data(
-    repo: str, data_type: str, max_age_hours: int = 8
-) -> Optional[list]:
-    """
-    Check if we have cached GitHub list data (issues or discussions) for a repo.
-
-    Uses a dedicated 'github-data-cache' index (separate from metrics cache)
-    to avoid mapping conflicts.
-
-    Args:
-        repo: Repository name (owner/repo)
-        data_type: 'issues' or 'discussions'
-        max_age_hours: Maximum cache age in hours (default 8)
-
-    Returns:
-        Cached list if found and fresh, None otherwise
-    """
-    import json
-
-    since = (datetime.utcnow() - timedelta(hours=max_age_hours)).isoformat()
-    try:
-        es = get_es_client()
-        result = es.search(
-            index="github-data-cache",
-            query={
-                "bool": {
-                    "must": [
-                        {"term": {"repo": repo}},
-                        {"term": {"data_type": data_type}},
-                        {"range": {"timestamp": {"gte": since}}},
-                    ]
-                }
-            },
-            sort=[{"timestamp": "desc"}],
-            size=1,
-        )
-
-        if result["hits"]["hits"]:
-            cached = result["hits"]["hits"][0]["_source"]
-            logger.info(
-                f"GitHub {data_type} cache HIT for {repo} "
-                f"(age: {cached['timestamp']})"
-            )
-            return json.loads(cached.get("json_data", "[]"))
-
-        logger.info(f"GitHub {data_type} cache MISS for {repo}")
-        return None
-    except Exception as e:
-        logger.warning(
-            f"GitHub {data_type} cache lookup failed (continuing without cache): {e}"
-        )
-        return None
-
-
-def store_github_data_cache(repo: str, data_type: str, data: list) -> None:
-    """
-    Store GitHub list data (issues or discussions) in cache.
-
-    Args:
-        repo: Repository name (owner/repo)
-        data_type: 'issues' or 'discussions'
-        data: List of items to cache
-    """
-    import json
-
-    try:
-        es = get_es_client()
-        doc = {
-            "repo": repo,
-            "data_type": data_type,
-            "timestamp": datetime.utcnow().isoformat(),
-            "json_data": json.dumps(data),
-            "count": len(data),
-        }
-        es.index(index="github-data-cache", document=doc)
-        logger.info(f"Cached {len(data)} {data_type} for {repo}")
-    except Exception as e:
-        logger.warning(f"Failed to cache GitHub {data_type} (continuing): {e}")
+# NOTE: Ephemeral API caching (web search, GitHub metrics, GitHub issues/
+# discussions) lives in tools/cache.py, backed by Redis with native key TTL.
+# Persistent, analytical data below stays in Elasticsearch.
 
 
 # =============================================================================
@@ -955,6 +713,104 @@ def get_adoption_signals(repo: str, signal_type: str = None, days: int = 90) -> 
         return [hit["_source"] for hit in result["hits"]["hits"]]
     except Exception as e:
         logger.error(f"Failed to get adoption signals for {repo}: {e}")
+        return []
+
+
+# =============================================================================
+# SUBAGENT FINDINGS STORAGE - Persist each subagent's narrative analysis
+# =============================================================================
+
+@tool
+def store_subagent_findings(
+    repo: str,
+    agent: str,
+    findings: str,
+    use_case: Optional[str] = None,
+) -> str:
+    """
+    Store your complete final analysis so future research runs can reuse it
+    instead of re-doing the same work. Call this ONCE, just before returning
+    your final answer, with the FULL VERBATIM markdown of your analysis —
+    never a summary or placeholder.
+
+    If your analysis covered multiple repositories, pass them comma-separated —
+    one findings document is stored per repository so each can be found later.
+
+    Args:
+        repo: Full repository name analyzed (e.g., "langchain-ai/langgraph").
+              Multiple repos may be comma-separated; free-form labels won't be findable.
+        agent: Your agent name: "metrics-agent", "sentiment-agent", or "web-research-agent"
+        findings: Your complete final analysis, verbatim markdown
+        use_case: Optional use case context this analysis was done for
+
+    Returns:
+        Confirmation message with document ID
+    """
+    # Retrieval does exact term-matches on repo, so normalize whatever the
+    # model passed ("a,b", "a, b", "a + b") into individual owner/name keys.
+    repos = [r.strip() for part in repo.split(",") for r in part.split("+")]
+    repos = [r for r in repos if r]
+    if not repos:
+        return "Warning: no valid repo name given; findings not stored."
+
+    try:
+        es = get_es_client()
+        timestamp = datetime.utcnow().isoformat()
+        for repo_key in repos:
+            doc = {
+                "repo": repo_key,
+                "agent": agent,
+                "timestamp": timestamp,
+                "use_case": use_case,
+                "findings": findings,
+            }
+            es.index(index="subagent-findings", document=doc)
+        logger.info(
+            f"Stored {agent} findings for {len(repos)} repo(s) "
+            f"({', '.join(repos)}; {len(findings)} chars)"
+        )
+        return f"Stored {agent} findings for {', '.join(repos)}"
+    except Exception as e:
+        # Persistence is best-effort: never fail the research over it.
+        logger.warning(f"Failed to store subagent findings for {repo}: {e}")
+        return f"Warning: could not store findings ({e}); continue with your answer."
+
+
+def get_subagent_findings(
+    repo: str, agent: Optional[str] = None, max_age_days: int = 7
+) -> list:
+    """
+    Retrieve stored subagent analyses for a repository within a freshness window.
+
+    Args:
+        repo: Repository name
+        agent: Optional filter — "metrics-agent", "sentiment-agent", or "web-research-agent"
+        max_age_days: Maximum age in days for findings to count as fresh
+
+    Returns:
+        List of findings docs, newest first (at most one per agent)
+    """
+    since = (datetime.utcnow() - timedelta(days=max_age_days)).isoformat()
+
+    try:
+        es = get_es_client()
+        must_clauses = [
+            {"term": {"repo": repo}},
+            {"range": {"timestamp": {"gte": since}}},
+        ]
+        if agent:
+            must_clauses.append({"term": {"agent": agent}})
+
+        result = es.search(
+            index="subagent-findings",
+            query={"bool": {"must": must_clauses}},
+            collapse={"field": "agent"},  # newest per agent
+            sort=[{"timestamp": "desc"}],
+            size=10,
+        )
+        return [hit["_source"] for hit in result["hits"]["hits"]]
+    except Exception as e:
+        logger.warning(f"Failed to get subagent findings for {repo}: {e}")
         return []
 
 
@@ -1208,70 +1064,3 @@ def get_all_discovered_repos() -> list:
         return []
 
 
-# =============================================================================
-# Cache Cleanup / Expiry
-# =============================================================================
-
-# TTLs for each cache index (in hours).  Matches the max_age values used in
-# the cache-read functions so a document that would be rejected by the reader
-# is also deleted from the index on the next cleanup pass.
-_CACHE_TTL_HOURS: dict[str, int] = {
-    "web-search-cache": 7 * 24,      # 7 days  — matches get_cached_search default
-    "github-metrics-cache": 24,       # 24 h    — matches get_cached_github_metrics default
-    "github-data-cache": 24,          # 24 h    — matches get_cached_github_data default
-}
-
-
-def cleanup_cache_index(index: str, timestamp_field: str, max_age_hours: int) -> int:
-    """
-    Delete stale documents from a single cache index.
-
-    Args:
-        index: Elasticsearch index name
-        timestamp_field: Name of the date field to check (e.g. "timestamp")
-        max_age_hours: Delete documents older than this many hours
-
-    Returns:
-        Number of documents deleted (0 on error or index not found)
-    """
-    cutoff = (datetime.utcnow() - timedelta(hours=max_age_hours)).isoformat()
-    try:
-        es = get_es_client()
-        resp = es.delete_by_query(
-            index=index,
-            query={"range": {timestamp_field: {"lt": cutoff}}},
-            refresh=True,
-            ignore_unavailable=True,  # silently skip if index doesn't exist yet
-        )
-        deleted = resp.get("deleted", 0)
-        if deleted:
-            logger.info(
-                f"Cache cleanup: removed {deleted} stale docs from '{index}' "
-                f"(older than {max_age_hours}h)"
-            )
-        return deleted
-    except Exception as e:
-        logger.warning(f"Cache cleanup failed for '{index}': {e}")
-        return 0
-
-
-def cleanup_all_caches() -> dict[str, int]:
-    """
-    Expire stale documents from all cache indices.
-
-    Called automatically at agent startup so indices stay bounded without
-    requiring Elasticsearch ILM or data-stream rollover configuration.
-
-    Returns:
-        Dict mapping index name → number of documents deleted
-    """
-    results: dict[str, int] = {}
-    for index, max_age_hours in _CACHE_TTL_HOURS.items():
-        results[index] = cleanup_cache_index(index, "timestamp", max_age_hours)
-
-    total = sum(results.values())
-    if total:
-        logger.info(f"Cache cleanup complete: {total} stale documents removed across {len(results)} indices")
-    else:
-        logger.info("Cache cleanup complete: all indices are within TTL")
-    return results

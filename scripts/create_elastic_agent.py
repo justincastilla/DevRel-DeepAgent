@@ -32,7 +32,7 @@ AGENT_ID = "devrel-research-agent"
 AGENT_NAME = "DevRel Research Agent"
 AGENT_DESCRIPTION = (
     "Queries Elasticsearch to retrieve technology research data for Developer Advocates. "
-    "Supports semantic search, trend analysis, cached metrics, adoption signals, "
+    "Supports semantic search, trend analysis, adoption signals, "
     "and historical research reports."
 )
 
@@ -58,8 +58,6 @@ TOOL_IDS = [
     "get-adoption-signals",            # adoption-signals for a repo from a start_date
     "get-adoption-signals-by-type",    # adoption-signals filtered by signal_type
     "count-adoption-signals",          # COUNT(*) by signal_type for a repo
-    "get-cached-search",               # web-search-cache lookup by query_hash + min_timestamp
-    "get-cached-github-metrics",       # github-metrics-cache lookup for a repo
     "get-past-discoveries",            # technology-discoveries from a start_date
     "search-discoveries-by-use-case",  # technology-discoveries matching a use_case pattern
     "search-by-tags",                  # technology-research filtered by tag_pattern + min_viability
@@ -127,15 +125,6 @@ for structured retrieval, or search for full-text / semantic lookups.
 │                         │ source_url, source_title, snippet                  │
 │                         │ company_mentioned, sentiment (positive|neutral|negative) │
 ├─────────────────────────┼────────────────────────────────────────────────────┤
-│ web-search-cache        │ Cached Tavily search results (7-day TTL)           │
-│                         │ query_hash (keyword), timestamp, result_count      │
-├─────────────────────────┼────────────────────────────────────────────────────┤
-│ github-metrics-cache    │ Cached GitHub API responses (24-hour TTL)          │
-│                         │ repo (keyword), timestamp                          │
-├─────────────────────────┼────────────────────────────────────────────────────┤
-│ github-data-cache       │ Cached issues / discussions (24-hour TTL)         │
-│                         │ repo (keyword), data_type (keyword), timestamp     │
-├─────────────────────────┼────────────────────────────────────────────────────┤
 │ technology-discoveries  │ Discovery run results                              │
 │                         │ use_case (text), timestamp                         │
 │                         │ technologies[].{name,github_url,stars,description} │
@@ -162,8 +151,6 @@ TIER 1 — Custom purpose-built tools (fast, pre-wired to the right index):
   Adoption signals (all types)          → get-adoption-signals
   Adoption signals of one type          → get-adoption-signals-by-type
   Count signals by type                 → count-adoption-signals
-  Check web search cache                → get-cached-search
-  Check GitHub metrics cache            → get-cached-github-metrics
   Past technology discoveries           → get-past-discoveries
   Discoveries by use case pattern       → search-discoveries-by-use-case
   Search repos by tag                   → search-by-tags
@@ -342,7 +329,7 @@ def main():
         action = "created"
 
     agent_id = result.get("id") or AGENT_ID
-    print(f"\n✓ Agent {action} successfully.")
+    print(f"\n[OK] Agent {action} successfully.")
     print(f"\n  Agent ID : {agent_id}")
     print(f"  Name     : {result.get('name', AGENT_NAME)}")
     print(f"\nNext step — add this to your .env:")

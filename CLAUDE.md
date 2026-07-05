@@ -44,9 +44,10 @@ python cli.py compare mongodb/mongo elastic/elasticsearch -v
 # Run test suite
 python scripts/test_agent.py
 
-# Test Elastic Agent ES|QL tools
-python scripts/test_elastic_agent_tools.py
-python scripts/test_elastic_agent_tools.py --tool get-trend-data
+# Test the elastic-agent's direct-Elasticsearch tools
+python scripts/test_elastic_subagent_tools.py
+
+# (Legacy/dormant) Test the Elastic Agent Builder ES|QL tools via /converse
 python scripts/test_elastic_agent_tools.py --list
 ```
 
@@ -59,7 +60,7 @@ The system uses a **main orchestrator agent** (`agent.py`) that delegates to fou
 1. **metrics-agent** (`subagents/metrics_agent.py`) - Fetches GitHub repository metrics (stars, commits, contributors, issue close rates)
 2. **sentiment-agent** (`subagents/sentiment_agent.py`) - Analyzes community sentiment from issues and discussions
 3. **web-agent** (`subagents/web_agent.py`) - Researches external adoption signals (blog posts, case studies, job postings)
-4. **elastic-agent** (`subagents/elastic_agent.py`) - Interfaces with Elastic serverless agent for ES|QL queries, semantic search, trend analysis, and data retrieval
+4. **elastic-agent** (`subagents/elastic_agent.py`) - Queries Elasticsearch directly via native tools for semantic search, trend analysis, adoption signals, and report/discovery retrieval
 
 The orchestrator coordinates these subagents in parallel, synthesizes their findings, and calculates a viability score.
 
@@ -86,23 +87,34 @@ This pattern ensures:
 
 ### Elastic Agent Integration
 
-The elastic-agent subagent connects to the **Elastic Agent Builder** in your Elastic serverless instance. It uses ES|QL tools for:
-- **Semantic search** - Find similar technologies using vector embeddings
-- **Trend analysis** - Query historical snapshots and time-series data
-- **Caching** - Check cached GitHub metrics and web search results
-- **Adoption signals** - Retrieve blog posts, case studies, job postings
-- **Reports** - Access past research reports and discoveries
+The elastic-agent subagent queries Elasticsearch **directly** via native LangChain
+tools (the ES client in `elasticsearch_tools.py`). It owns a set of read-only tools
+and decides which to call — there is no round-trip through the Elastic Agent Builder
+`/converse` endpoint. Every tool returns structured data (dicts/lists) the subagent
+reasons over directly. Capabilities:
+- **Semantic search** (`find_similar_technologies`) - Find similar technologies via vector embeddings
+- **Trend analysis** (`get_trend_data`, `search_repo_timeseries`) - Historical snapshots and time-series
+- **Adoption signals** (`search_adoption_signals`) - Blog posts, case studies, job postings
+- **Reports** (`fetch_latest_report`, `fetch_cached_report`) - Past research reports
+- **Subagent findings** (`fetch_subagent_findings`) - Stored per-subagent analyses; the orchestrator reuses fresh ones (metrics <24h, sentiment/web <7d) instead of re-running subagents
+- **Discoveries** (`search_past_discoveries`, `list_discovered_repos`) - Prior discovery runs
+- **Snapshots / tags** (`compare_technologies`, `search_by_tags`) - Latest stored snapshots
 
-ES|QL tools are defined in `elastic_agent_tools.md` and created via the Kibana Dev Tools console.
+> **Legacy (dormant):** The Elastic Agent Builder path — `ask_elastic_agent` →
+> `/converse`, the ES|QL tools in `elastic_agent_tools.md`, and the
+> `scripts/create_elastic_agent*.py` provisioners — remains on disk for
+> reference/fallback but is no longer wired into the agent.
 
 ### Tool Categories
 
 Tools in `tools/` are split by domain:
 - `github_tools.py` - GitHub API interactions (`fetch_repo_metrics`, `fetch_recent_issues`, `fetch_repo_discussions`)
-- `elasticsearch_tools.py` - Data persistence, caching, and querying (direct ES client)
-- `elastic_agent_client.py` - Client for invoking ES|QL tools on the Elastic serverless agent
-- `elastic_subagent_tools.py` - LangChain tools wrapping the Elastic agent client (16 tools)
+- `elasticsearch_tools.py` - Persistent data storage and querying (direct ES client); several retrieval functions are `@tool`-decorated
+- `elastic_search_tools.py` - Thin `@tool` wrappers over the ES retrieval helpers, used by the elastic-agent subagent (structured dict/list output)
+- `cache.py` - Redis-backed cache for external API results (Tavily search, GitHub metrics, GitHub issues/discussions)
 - `scoring_tools.py` - Viability scoring logic (`calculate_viability_score`)
+- `elastic_agent_client.py` *(dormant)* - Client for the Elastic Agent Builder `/converse` + ES|QL endpoints
+- `elastic_subagent_tools.py` *(dormant)* - The legacy `ask_elastic_agent` delegation tool
 
 ### GitHub API Optimizations
 
@@ -132,14 +144,21 @@ stats = get_github_rate_limit_stats()     # Full usage statistics
 
 ### Data Storage
 
-**Elasticsearch Indices:**
+**Redis Cache** (ephemeral, expires via native key TTL — see `tools/cache.py`):
+- `search:<hash>` - Cached Tavily search results (7-day TTL)
+- `gh-metrics:<repo>` - Cached GitHub API responses (24-hour TTL)
+- `gh-data:<repo>:<issues|discussions>` - Cached issues/discussions (24-hour TTL)
+
+Redis expires these keys automatically, so there is no cleanup job or scheduled
+expiry workflow. If Redis is unavailable the app still runs (every lookup is a miss).
+
+**Elasticsearch Indices** (persistent, analytical data):
 - `technology-research` - Main research snapshots with embeddings
-- `web-search-cache` - Cached Tavily search results (7-day TTL)
-- `github-metrics-cache` - Cached GitHub API responses (24-hour TTL)
 - `repo-timeseries` - Point-in-time metrics for trend graphs
 - `commit-history` - Weekly commit aggregates by author
 - `adoption-signals` - Structured web findings (case studies, blog posts)
 - `research-reports` - Final evaluation/comparison reports
+- `subagent-findings` - Each research subagent's full narrative analysis, stored verbatim for freshness-window reuse
 
 **File Output:**
 - `research_reports/` - Markdown reports saved automatically after each evaluation/comparison
@@ -149,6 +168,7 @@ stats = get_github_rate_limit_stats()     # Full usage statistics
 All configuration is managed through `config.py`, which loads from `.env`:
 - API keys: `ANTHROPIC_API_KEY`, `TAVILY_API_KEY`, `GITHUB_TOKEN`, `ELASTICSEARCH_API_KEY`
 - Elasticsearch: `ELASTICSEARCH_HOST`
+- Redis cache: `REDIS_URL` (optional - defaults to `redis://localhost:6379/0`; app runs without it)
 - Kibana/Elastic Agent: `KIBANA_URL` (optional - derived from ES host), `KIBANA_API_KEY` (optional - uses ES key)
 - Observability: `LANGSMITH_API_KEY`, `LANGCHAIN_PROJECT`
 

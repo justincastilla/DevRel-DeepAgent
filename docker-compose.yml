@@ -12,6 +12,17 @@ services:
       - /app/.venv
     env_file:
       - .env
+    environment:
+      # Point the app at the Redis service below (overrides .env if set there)
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
     restart: unless-stopped
 
 volumes:
