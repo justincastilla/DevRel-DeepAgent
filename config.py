@@ -55,6 +55,9 @@ class Config:
     # Elasticsearch
     ELASTICSEARCH_URL = os.getenv("ELASTICSEARCH_HOST")  # Using ELASTICSEARCH_HOST from .env
     ELASTICSEARCH_API_KEY = os.getenv("ELASTICSEARCH_API_KEY")
+    # Inference endpoint backing the semantic_content (semantic_text) field.
+    # Defaults to the serverless-native preconfigured ELSER endpoint.
+    SEMANTIC_INFERENCE_ID = os.getenv("SEMANTIC_INFERENCE_ID", ".elser-2-elasticsearch")
 
     # Redis (caching layer). Optional: if unset/unavailable the app runs without a cache.
     REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")

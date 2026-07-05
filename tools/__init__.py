@@ -49,7 +49,21 @@ from .elasticsearch_tools import (
 from .scoring_tools import calculate_viability_score
 from .web_tools import tavily_search, record_adoption_signal
 
-# Elastic Agent client & tools (for elastic subagent)
+# Direct-Elasticsearch @tool wrappers used by the elastic-agent subagent.
+from .elastic_search_tools import (
+    search_repo_timeseries,
+    search_adoption_signals,
+    fetch_latest_report,
+    fetch_cached_report,
+    search_past_discoveries,
+    list_discovered_repos,
+    ELASTIC_WRAPPER_TOOLS,
+)
+
+# Legacy Elastic Agent Builder client & /converse tool. Kept dormant — the
+# elastic-agent subagent now queries Elasticsearch directly (see
+# tools/elastic_search_tools.py and subagents/elastic_agent.py). Retained for
+# fallback/reference only; no longer wired into the agent.
 from .elastic_agent_client import (
     ElasticAgentClient,
     ElasticAgentError,
@@ -57,7 +71,7 @@ from .elastic_agent_client import (
     days_ago_iso,
     hours_ago_iso,
 )
-from .elastic_subagent_tools import ELASTIC_SUBAGENT_TOOLS, ask_elastic_agent
+from .elastic_subagent_tools import ask_elastic_agent
 
 __all__ = [
     # GitHub tools
@@ -99,12 +113,19 @@ __all__ = [
     # Web search tools
     "tavily_search",
     "record_adoption_signal",
-    # Elastic Agent client & tools
+    # Direct-Elasticsearch @tool wrappers (elastic-agent subagent)
+    "search_repo_timeseries",
+    "search_adoption_signals",
+    "fetch_latest_report",
+    "fetch_cached_report",
+    "search_past_discoveries",
+    "list_discovered_repos",
+    "ELASTIC_WRAPPER_TOOLS",
+    # Legacy Elastic Agent Builder client & tool (dormant)
     "ElasticAgentClient",
     "ElasticAgentError",
     "get_elastic_agent_client",
     "days_ago_iso",
     "hours_ago_iso",
-    "ELASTIC_SUBAGENT_TOOLS",
     "ask_elastic_agent",
 ]

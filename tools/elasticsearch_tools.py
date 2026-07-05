@@ -264,8 +264,8 @@ def find_similar_technologies(description: str, limit: int = 5) -> list:
 
         similar_tech = [
             {
-                "repo": hit["_source"]["repo"],
-                "timestamp": hit["_source"]["timestamp"],
+                "repo": hit["_source"].get("repo"),
+                "timestamp": hit["_source"].get("timestamp"),
                 "metrics": hit["_source"].get("metrics", {}),
                 "analysis": hit["_source"].get("analysis", {}),
                 "tags": hit["_source"].get("tags", []),

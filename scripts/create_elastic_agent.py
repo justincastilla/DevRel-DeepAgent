@@ -329,7 +329,7 @@ def main():
         action = "created"
 
     agent_id = result.get("id") or AGENT_ID
-    print(f"\n✓ Agent {action} successfully.")
+    print(f"\n[OK] Agent {action} successfully.")
     print(f"\n  Agent ID : {agent_id}")
     print(f"  Name     : {result.get('name', AGENT_NAME)}")
     print(f"\nNext step — add this to your .env:")

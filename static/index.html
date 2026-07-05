@@ -94,6 +94,17 @@
 
         <!-- Dashboard Grid -->
         <div id="dashboard" class="dashboard hidden">
+            <!-- Live Readout — single pane showing exactly what's happening now -->
+            <section id="readout" class="readout">
+                <div class="readout-head">
+                    <span class="readout-pulse" id="readoutPulse"></span>
+                    <span class="readout-agent" id="readoutAgent">system</span>
+                    <span class="readout-action" id="readoutAction">Waiting to start&hellip;</span>
+                    <span class="readout-timer" id="readoutTimer">0.0s</span>
+                </div>
+                <pre class="readout-stream" id="readoutStream"><span class="readout-idle">The live model output will stream here as it works&hellip;</span></pre>
+            </section>
+
             <!-- Agent Status Cards -->
             <section class="agent-cards">
                 <div class="agent-card" id="card-orchestrator">

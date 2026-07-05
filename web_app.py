@@ -54,8 +54,20 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 # Elastic tool names for special handling
 # =============================================================================
 
-# The single tool the elastic-agent subagent calls to reach the Elastic Agent Builder
-ELASTIC_TOOL_NAMES = {"ask_elastic_agent"}
+# The read-only Elasticsearch tools the elastic-agent subagent calls directly.
+# (Replaces the former single ask_elastic_agent → Agent Builder /converse tool.)
+ELASTIC_TOOL_NAMES = {
+    "find_similar_technologies",
+    "get_trend_data",
+    "search_by_tags",
+    "compare_technologies",
+    "search_repo_timeseries",
+    "search_adoption_signals",
+    "fetch_latest_report",
+    "fetch_cached_report",
+    "search_past_discoveries",
+    "list_discovered_repos",
+}
 
 # All orchestrator-level tool names (read-only ES tools were removed; only these remain)
 ORCHESTRATOR_TOOL_NAMES = {
@@ -65,8 +77,8 @@ ORCHESTRATOR_TOOL_NAMES = {
 
 # Subagent tool mapping: tool name → which subagent owns it
 SUBAGENT_TOOL_MAP = {
-    # elastic-agent
-    "ask_elastic_agent": "elastic-agent",
+    # elastic-agent (direct Elasticsearch queries)
+    **{name: "elastic-agent" for name in ELASTIC_TOOL_NAMES},
     # metrics-agent
     "fetch_repo_metrics": "metrics-agent",
     "store_research_snapshot": "metrics-agent",
@@ -81,7 +93,7 @@ SUBAGENT_TOOL_MAP = {
 # Phase detection based on tool names
 def detect_phase(tool_name: str, agent_name: str) -> str:
     """Detect the current research phase based on the tool being called."""
-    if tool_name == "ask_elastic_agent":
+    if tool_name in ELASTIC_TOOL_NAMES:
         return "data_retrieval"
     if tool_name in ("fetch_repo_metrics", "store_research_snapshot"):
         return "fetching_metrics"
@@ -166,8 +178,9 @@ async def get_report(report_id: str):
         else:
             return HTMLResponse("<h1>Report not found</h1>", status_code=404)
 
-    # Read the markdown
-    md_content = report_path.read_text()
+    # Read the markdown (utf-8: reports contain emoji/Unicode that Windows'
+    # default cp1252 codec cannot decode)
+    md_content = report_path.read_text(encoding="utf-8")
 
     # Strip YAML frontmatter if present
     if md_content.startswith("---"):
@@ -254,7 +267,12 @@ async def websocket_research(websocket: WebSocket):
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
 
-        # Stream events from the agent
+        # Stream events from the agent.
+        # stored_report: the authoritative full report, captured from the
+        # store_research_report tool call's full_report argument (the report text
+        # exists exactly once, there). final_response: fallback — the last long
+        # chat output, for runs that never call store_research_report.
+        stored_report = ""
         final_response = ""
         event_count = 0
 
@@ -278,6 +296,13 @@ async def websocket_research(websocket: WebSocket):
                     agent_name = identify_agent(event)
                     phase = detect_phase(event_name, agent_name)
                     is_elastic = event_name in ELASTIC_TOOL_NAMES
+
+                    # Capture the authoritative report from the storage call.
+                    # Keep the longest in case of (erroneous) multiple calls.
+                    if event_name == "store_research_report" and isinstance(tool_input, dict):
+                        candidate = tool_input.get("full_report") or ""
+                        if isinstance(candidate, str) and len(candidate) > len(stored_report):
+                            stored_report = candidate
 
                     # write_todos: emit a plan update instead of a generic tool event
                     if event_name == "write_todos":
@@ -316,7 +341,7 @@ async def websocket_research(websocket: WebSocket):
                         if isinstance(output, str):
                             try:
                                 parsed = json.loads(output)
-                                if isinstance(parsed, dict):
+                                if isinstance(parsed, (dict, list)):
                                     output = parsed
                             except (json.JSONDecodeError, ValueError):
                                 pass
@@ -326,42 +351,25 @@ async def websocket_research(websocket: WebSocket):
                             if isinstance(raw_content, str):
                                 try:
                                     parsed = json.loads(raw_content)
-                                    if isinstance(parsed, dict):
+                                    if isinstance(parsed, (dict, list)):
                                         output = parsed
                                 except (json.JSONDecodeError, ValueError):
                                     pass
 
-                        # Detect cache status from tool output.
-                        # - GitHub/web tools: explicit "cached" boolean field
-                        # - ask_elastic_agent: infer from Status in response string
+                        # Detect cache status from tool output. Only the GitHub/web
+                        # fetch tools expose a "cached" boolean (Redis API cache).
+                        # The elastic-agent tools read persistent ES data, not a cache.
                         cache_hit = None
-                        if isinstance(output, dict):
-                            if "cached" in output:
-                                cache_hit = bool(output["cached"])
-                        elif event_name == "ask_elastic_agent" and isinstance(output, str):
-                            # Elastic agent returns structured text; FOUND = hit, NOT_FOUND = miss
-                            if "Status: FOUND" in output or "Status: PARTIAL" in output:
-                                cache_hit = True
-                            elif "Status: NOT_FOUND" in output:
-                                cache_hit = False
+                        if isinstance(output, dict) and "cached" in output:
+                            cache_hit = bool(output["cached"])
 
                         # Summarize the output
                         output_summary = ""
-                        if event_name == "ask_elastic_agent" and isinstance(output, str):
-                            # Extract the ## Summary section if present, else truncate
-                            if "## Summary" in output:
-                                summary_start = output.index("## Summary") + len("## Summary")
-                                summary_text = output[summary_start:].strip()
-                                # Stop at next ## section
-                                next_section = summary_text.find("\n##")
-                                if next_section != -1:
-                                    summary_text = summary_text[:next_section].strip()
-                                output_summary = summary_text[:300] + ("..." if len(summary_text) > 300 else "")
-                            else:
-                                output_summary = output[:200] + ("..." if len(output) > 200 else "")
-                        elif isinstance(output, dict):
+                        if isinstance(output, dict):
                             if "error" in output:
                                 output_summary = f"Error: {output['error']}"
+                            elif output.get("found") is False:
+                                output_summary = "not found in Elasticsearch"
                             elif "issues" in output:
                                 count = output.get("count", len(output["issues"]))
                                 output_summary = f"{count} issues"
@@ -375,6 +383,8 @@ async def websocket_research(websocket: WebSocket):
                                 output_summary = "metrics fetched"
                             else:
                                 output_summary = f"Response with {len(output)} fields"
+                        elif isinstance(output, list):
+                            output_summary = f"{len(output)} records" if len(output) != 1 else "1 record"
                         elif isinstance(output, str):
                             output_summary = output[:200] + ("..." if len(output) > 200 else "")
                         elif hasattr(output, "__class__") and "Command" in type(output).__name__:
@@ -444,25 +454,34 @@ async def websocket_research(websocket: WebSocket):
                 elif event_kind == "on_chain_end":
                     pass  # We handle completion via tool_end and the final message
 
-                # --- Chat Model Stream (LLM tokens) ---
+                # --- Chat Model Stream (LLM "thinking" tokens) ---
                 elif event_kind == "on_chat_model_stream":
                     chunk = event_data.get("chunk", None)
-                    if chunk:
-                        content = ""
-                        if hasattr(chunk, "content"):
-                            content = chunk.content
-                        elif isinstance(chunk, dict):
-                            content = chunk.get("content", "")
-
-                        if content:
-                            # Only send periodic LLM updates, not every token
-                            if event_count % 5 == 0:
-                                msg = {
-                                    "type": "llm_token",
-                                    "agent": identify_agent(event),
-                                    "content": content,
-                                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                                }
+                    if chunk is not None:
+                        raw = getattr(chunk, "content", None)
+                        if raw is None and isinstance(chunk, dict):
+                            raw = chunk.get("content", "")
+                        # Anthropic streams content as a list of blocks; the visible
+                        # text lives in {"type": "text", "text": "..."} blocks.
+                        # OpenAI/others stream a plain string.
+                        text = ""
+                        if isinstance(raw, str):
+                            text = raw
+                        elif isinstance(raw, list):
+                            text = "".join(
+                                b.get("text", "")
+                                for b in raw
+                                if isinstance(b, dict) and b.get("type") == "text"
+                            )
+                        # Stream every non-empty delta so the live readout keeps
+                        # moving during long generations (no % throttle).
+                        if text:
+                            msg = {
+                                "type": "llm_token",
+                                "agent": identify_agent(event),
+                                "content": text,
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                            }
 
                 # --- Chat Model End (full response) ---
                 elif event_kind == "on_chat_model_end":
@@ -511,21 +530,40 @@ async def websocket_research(websocket: WebSocket):
             })
 
         # --- Completion: save report and send link ---
+        # Prefer the report captured from store_research_report (complete, exists
+        # exactly once); fall back to the last long chat output. A tiny stored
+        # placeholder must not beat a real chat-generated report, hence the
+        # length comparison.
+        if len(stored_report) > len(final_response):
+            final_response = stored_report
         if final_response:
-            # Save the report
-            clean_query = re.sub(r"[^\w\s-]", "", query)[:50].strip().replace(" ", "_")
-            report_path = save_report_to_file(final_response, "query", clean_query)
-            report_id = report_path.stem  # filename without extension
+            # Saving the report file is best-effort — the report is already
+            # generated (and stored in ES). A file-write failure must NOT sink
+            # the completion event, or the UI hangs on "writing the final report".
+            report_id = None
+            report_filename = None
+            try:
+                clean_query = re.sub(r"[^\w\s-]", "", query)[:50].strip().replace(" ", "_")
+                report_path = save_report_to_file(final_response, "query", clean_query)
+                report_id = report_path.stem  # filename without extension
+                report_filename = report_path.name
+            except Exception as save_err:
+                logger.error(
+                    f"Failed to save report file (continuing to completion): {save_err}",
+                    exc_info=True,
+                )
 
-            await websocket.send_json({
+            complete_msg = {
                 "type": "complete",
                 "message": "Research complete!",
-                "report_url": f"/reports/{report_id}",
-                "report_filename": report_path.name,
                 "word_count": len(final_response.split()),
                 "event_count": event_count,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
+            }
+            if report_id:
+                complete_msg["report_url"] = f"/reports/{report_id}"
+                complete_msg["report_filename"] = report_filename
+            await websocket.send_json(complete_msg)
         else:
             await websocket.send_json({
                 "type": "complete",

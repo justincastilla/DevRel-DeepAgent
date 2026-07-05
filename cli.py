@@ -212,14 +212,14 @@ class ProgressDisplay:
         """Background thread to watch log file for updates."""
         # Get initial file position
         if os.path.exists(self.log_file):
-            with open(self.log_file, "r") as f:
+            with open(self.log_file, "r", encoding="utf-8", errors="replace") as f:
                 f.seek(0, 2)  # Seek to end
                 self.last_log_pos = f.tell()
 
         while not self.stop_event.is_set():
             try:
                 if os.path.exists(self.log_file):
-                    with open(self.log_file, "r") as f:
+                    with open(self.log_file, "r", encoding="utf-8", errors="replace") as f:
                         f.seek(self.last_log_pos)
                         new_lines = f.readlines()
                         self.last_log_pos = f.tell()
@@ -465,9 +465,9 @@ def validate_and_expand_report(agent, initial_response: str, query: str, llm: st
 ## Required Actions (Elasticsearch ONLY):
 
 Use elastic-agent to retrieve EXISTING data:
-- `get_adoption_signals` - Get all blog posts, case studies, tutorials already recorded
-- `get_latest_snapshot` - Get the metrics snapshot already stored
-- `get_repository_trends` - Get historical data if available
+- `search_adoption_signals` - Get all blog posts, case studies, tutorials already recorded
+- `compare_technologies` - Get the latest metrics snapshot already stored
+- `get_trend_data` / `search_repo_timeseries` - Get historical data if available
 
 ## Then EXPAND the report by:
 
@@ -499,7 +499,7 @@ Use elastic-agent to retrieve EXISTING data:
                     },
                     config={"recursion_limit": config.RECURSION_LIMIT},
                 )
-            new_response = result["messages"][-1].content
+            new_response = extract_final_report(result)
             new_word_count = count_words(new_response)
 
             # Only accept expansion if it's actually longer
@@ -544,6 +544,36 @@ def spinner(message="Working", verbose: bool = None):
 REPORTS_DIR = Path(__file__).parent / "research_reports"
 
 
+def extract_final_report(result: dict) -> str:
+    """
+    Extract the authoritative report text from an agent run result.
+
+    The orchestrator is instructed to write the full report exactly once — as the
+    full_report argument of its store_research_report tool call — and end with only
+    a short summary message. So the last message is NOT the report. Scan the message
+    history for store_research_report calls and return the longest full_report;
+    fall back to the last message's content for runs that never store a report
+    (e.g. discovery). The length comparison also protects against a stored
+    placeholder beating a real chat-generated report.
+    """
+    last_content = result["messages"][-1].content if result.get("messages") else ""
+    if isinstance(last_content, list):  # Anthropic block format
+        last_content = "\n".join(
+            b.get("text", "") for b in last_content
+            if isinstance(b, dict) and b.get("type") == "text"
+        )
+
+    best_stored = ""
+    for message in result.get("messages", []):
+        for tool_call in getattr(message, "tool_calls", None) or []:
+            if tool_call.get("name") == "store_research_report":
+                candidate = (tool_call.get("args") or {}).get("full_report") or ""
+                if isinstance(candidate, str) and len(candidate) > len(best_stored):
+                    best_stored = candidate
+
+    return best_stored if len(best_stored) > len(last_content) else last_content
+
+
 def save_report_to_file(content: str, report_type: str, identifier: str) -> Path:
     """
     Save a research report to the research_reports directory.
@@ -576,8 +606,9 @@ generated: {datetime.now().isoformat()}
 
 """
 
-    # Write file
-    with open(filepath, "w") as f:
+    # Write file. encoding="utf-8" is required: reports contain emoji/Unicode
+    # (e.g. ✅) that Windows' default cp1252 codec cannot encode.
+    with open(filepath, "w", encoding="utf-8") as f:
         f.write(header + content)
 
     logger.info(f"Saved report to {filepath}")
@@ -749,7 +780,7 @@ fall back to gathering metrics from public web sources.
                 config={"recursion_limit": config.RECURSION_LIMIT},
             )
 
-        response = result["messages"][-1].content
+        response = extract_final_report(result)
 
         # Validate length and expand if needed
         response = validate_and_expand_report(agent, response, enhanced_query, llm)
@@ -818,7 +849,7 @@ def evaluate_command(args):
                 config={"recursion_limit": config.RECURSION_LIMIT},
             )
 
-        response = result["messages"][-1].content
+        response = extract_final_report(result)
 
         # Validate length and expand if needed
         response = validate_and_expand_report(agent, response, query, llm)
@@ -892,7 +923,7 @@ def compare_command(args):
                 config={"recursion_limit": config.RECURSION_LIMIT},
             )
 
-        response = result["messages"][-1].content
+        response = extract_final_report(result)
 
         # Validate length and expand if needed
         response = validate_and_expand_report(agent, response, query, llm)
@@ -943,7 +974,7 @@ def search_command(args):
                 config={"recursion_limit": config.RECURSION_LIMIT},
             )
 
-        response = result["messages"][-1].content
+        response = extract_final_report(result)
 
         print(response)
 
@@ -1026,7 +1057,7 @@ DO NOT evaluate the technologies yet - just discover and list them with links.
                 config={"recursion_limit": config.RECURSION_LIMIT},
             )
 
-        response = result["messages"][-1].content
+        response = extract_final_report(result)
 
         print(response)
 
@@ -1097,7 +1128,7 @@ def export_result(content: str, output_path: str, format_type: str):
 
     try:
         if format_type == "markdown":
-            with open(output_path, "w") as f:
+            with open(output_path, "w", encoding="utf-8") as f:
                 f.write(content)
             print(f"\n✓ Exported to {output_path} (Markdown)")
 
@@ -1107,14 +1138,14 @@ def export_result(content: str, output_path: str, format_type: str):
                 "timestamp": datetime.utcnow().isoformat(),
                 "content": content,
             }
-            with open(output_path, "w") as f:
+            with open(output_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
             print(f"\n✓ Exported to {output_path} (JSON)")
 
         elif format_type == "csv":
             print(f"\n⚠️  CSV export not yet fully implemented for this report type")
             print(f"Content saved as text to {output_path}")
-            with open(output_path, "w") as f:
+            with open(output_path, "w", encoding="utf-8") as f:
                 f.write(content)
 
     except Exception as e:

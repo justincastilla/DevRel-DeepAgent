@@ -15,7 +15,14 @@ const state = {
     currentPhase: null,
     completedPhases: new Set(),
     agentStatuses: {},
+    // Live readout
+    startTime: null,
+    timerInterval: null,
+    thinkingBuffer: "",
 };
+
+// Keep the streamed "thinking" text from growing unbounded in the DOM.
+const READOUT_MAX_CHARS = 4000;
 
 // =============================================================================
 // DOM references
@@ -37,7 +44,63 @@ const dom = {
     resultSection: $("#resultSection"),
     resultSummary: $("#resultSummary"),
     reportLink: $("#reportLink"),
+    // Live readout pane
+    readout: $("#readout"),
+    readoutAgent: $("#readoutAgent"),
+    readoutAction: $("#readoutAction"),
+    readoutTimer: $("#readoutTimer"),
+    readoutStream: $("#readoutStream"),
+    readoutPulse: $("#readoutPulse"),
 };
+
+// =============================================================================
+// Live readout pane — the single "what is it doing right now" surface
+// =============================================================================
+
+// Set the current headline: which agent, and what it's doing. `newAction`
+// resets the streamed thinking buffer (a fresh step is starting).
+function setReadout(agent, action, { newAction = false, state: stateName } = {}) {
+    if (dom.readoutAgent) {
+        dom.readoutAgent.textContent = agent || "system";
+        dom.readoutAgent.className = `readout-agent ${agentClass(agent || "system")}`;
+    }
+    if (dom.readoutAction && action != null) {
+        dom.readoutAction.textContent = action;
+    }
+    if (dom.readout && stateName) {
+        dom.readout.dataset.state = stateName; // "running" | "done" | "error"
+    }
+    if (newAction) {
+        state.thinkingBuffer = "";
+        if (dom.readoutStream) dom.readoutStream.textContent = "";
+    }
+}
+
+// Append streamed model text to the thinking buffer.
+function appendThinking(text) {
+    if (!text || !dom.readoutStream) return;
+    state.thinkingBuffer += text;
+    if (state.thinkingBuffer.length > READOUT_MAX_CHARS) {
+        state.thinkingBuffer = state.thinkingBuffer.slice(-READOUT_MAX_CHARS);
+    }
+    dom.readoutStream.textContent = state.thinkingBuffer;
+    dom.readoutStream.scrollTop = dom.readoutStream.scrollHeight;
+}
+
+function startReadoutTimer() {
+    state.startTime = Date.now();
+    if (state.timerInterval) clearInterval(state.timerInterval);
+    state.timerInterval = setInterval(() => {
+        if (!dom.readoutTimer || !state.startTime) return;
+        const secs = (Date.now() - state.startTime) / 1000;
+        dom.readoutTimer.textContent = `${secs.toFixed(1)}s`;
+    }, 100);
+}
+
+function stopReadoutTimer() {
+    if (state.timerInterval) clearInterval(state.timerInterval);
+    state.timerInterval = null;
+}
 
 // =============================================================================
 // Phase management
@@ -273,6 +336,12 @@ function startResearch(query, model) {
     // Reset phases
     $$(".phase-step").forEach((s) => s.classList.remove("active", "completed"));
 
+    // Reset live readout + start the elapsed timer
+    state.thinkingBuffer = "";
+    if (dom.readoutStream) dom.readoutStream.textContent = "";
+    setReadout("system", "Connecting…", { state: "running" });
+    startReadoutTimer();
+
     // Update connection status
     dom.connectionStatus.textContent = "Connecting";
     dom.connectionStatus.className = "status-badge status-running";
@@ -333,20 +402,34 @@ function handleMessage(msg) {
     switch (msg.type) {
         case "status":
             addTimelineEvent(msg);
+            setReadout("system", msg.message, { state: "running" });
             break;
 
-        case "tool_start":
+        case "tool_start": {
             addTimelineEvent(msg);
             addAgentActivity(msg.agent, renderToolStartCard(msg));
+            const bp = briefParams(msg.params);
+            setReadout(msg.agent, `calling ${msg.tool}${bp ? " (" + bp + ")" : ""}`, {
+                newAction: true,
+                state: "running",
+            });
             break;
+        }
 
         case "tool_end":
             addTimelineEvent(msg);
             addAgentActivity(msg.agent, renderToolEndCard(msg));
+            setReadout(msg.agent, `${msg.tool} → ${msg.output_summary || "done"}`, {
+                state: "running",
+            });
             break;
 
         case "agent_start":
             addTimelineEvent(msg);
+            setReadout(msg.agent, msg.detail || "subagent started", {
+                newAction: true,
+                state: "running",
+            });
             break;
 
         case "todos_update":
@@ -354,20 +437,33 @@ function handleMessage(msg) {
             break;
 
         case "llm_token":
-            // Light-touch: just mark agent as active
-            if (msg.agent) {
-                setAgentStatus(msg.agent, "running");
-            }
+            // Live "thinking": mark agent active and stream the text into the readout.
+            if (msg.agent) setAgentStatus(msg.agent, "running");
+            setReadout(msg.agent, "thinking…", { state: "running" });
+            appendThinking(msg.content);
             break;
 
         case "error":
             addTimelineEvent(msg);
+            setReadout("system", msg.message || "Error", { state: "error" });
             break;
 
         case "complete":
             handleComplete(msg);
             break;
     }
+}
+
+// Short one-line param summary for the readout headline.
+function briefParams(params) {
+    if (!params || typeof params !== "object") return "";
+    const parts = Object.entries(params).map(([k, v]) => {
+        let val = typeof v === "string" ? v : JSON.stringify(v);
+        if (val && val.length > 40) val = val.slice(0, 40) + "…";
+        return `${k}=${val}`;
+    });
+    const s = parts.join(", ");
+    return s.length > 90 ? s.slice(0, 90) + "…" : s;
 }
 
 function renderToolStartCard(msg) {
@@ -447,6 +543,9 @@ function renderTodos(todos) {
 }
 
 function handleComplete(msg) {
+    // Update the live readout to a finished state
+    setReadout("orchestrator", msg.message || "Research complete", { state: "done" });
+
     // Mark all phases as completed
     PHASE_ORDER.forEach((p) => state.completedPhases.add(p));
     $$(".phase-step").forEach((s) => {
@@ -484,6 +583,7 @@ function finishResearch() {
     state.isRunning = false;
     dom.submitBtn.disabled = false;
     dom.submitBtn.querySelector("span").textContent = "Research";
+    stopReadoutTimer();
 }
 
 // =============================================================================

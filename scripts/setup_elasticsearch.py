@@ -76,7 +76,11 @@ INDICES = {
             },
             "semantic_content": {
                 "type": "semantic_text",
-                "inference_id": "devrel-elser-endpoint"
+                # Preconfigured, serverless-native ELSER endpoint (sparse_embedding,
+                # adaptive allocations, zero management). Avoids deploying a custom
+                # ELSER model. Override via SEMANTIC_INFERENCE_ID if you provisioned
+                # your own endpoint.
+                "inference_id": config.SEMANTIC_INFERENCE_ID
             }
         }
         },

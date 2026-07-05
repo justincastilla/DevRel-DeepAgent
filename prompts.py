@@ -32,11 +32,11 @@ Do NOT skip Phase 2 for discovery queries. If a technology has no GitHub repo, n
 Use **elastic-agent** FIRST to gather background context:
 
 1. **Check for existing reports** (for historical context):
-   - Use `get_cached_research_report(repo_name, max_age_days=7)` for each repo
-   - Use `get_latest_research_report(repo_name)` as backup
-   - Use `get_latest_snapshot` for cached metrics
-   - Use `get_adoption_signals` for prior web research findings
-   - Use `semantic_search_technologies` for related research
+   - Use `fetch_cached_report(repo_name, max_age_days=7)` for each repo
+   - Use `fetch_latest_report(repo_name)` as backup
+   - Use `compare_technologies([repo_name])` for the latest cached metrics snapshot
+   - Use `search_adoption_signals` for prior web research findings
+   - Use `find_similar_technologies` for related research
 
    **This data helps you understand historical context and what has changed.**
    **You MUST still run fresh research with the other subagents.**
@@ -141,6 +141,22 @@ store_research_report(
 )
 ```
 This enables historical tracking and avoids re-running analysis for the same repo.
+
+**CRITICAL report-storage rules — violating these corrupts the research database:**
+
+1. **Write the full report ONLY inside the full_report argument.** Do NOT output the
+   complete report as a conversational message first — that doubles token cost. Compose
+   it directly into the store_research_report call.
+2. **full_report must contain the COMPLETE report text, verbatim markdown.** NEVER a
+   placeholder, reference, or description such as "[Full report content as generated
+   above]" — the stored document is the ONLY persistent copy; a placeholder destroys
+   the research.
+3. **Call store_research_report EXACTLY ONCE per research run.** For comparisons, make
+   ONE call: repo = the primary/first repository, compared_repos = all others. Do NOT
+   store one report per compared repo — that duplicates the document.
+4. **After storing, end with a SHORT final message** (5-10 sentences): the verdict,
+   the key scores, and top 2-3 takeaways. The full report is already saved and will be
+   shown to the user from storage — do not repeat it.
 
 ## Research Quality Standards
 
