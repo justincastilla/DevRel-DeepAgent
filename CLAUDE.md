@@ -190,7 +190,13 @@ Sensitive keys are automatically detected and masked in logs.
 
 ### Prompts
 
-System prompts in `prompts.py` define:
+All prompts live in the `prompts/` package — one module per prompt owner:
+- `prompts/orchestrator.py` — main orchestrator behavior, research workflow, report templates, and `get_system_prompt()`
+- `prompts/metrics_agent.py`, `prompts/sentiment_agent.py`, `prompts/web_agent.py`, `prompts/elastic_agent.py` — each subagent's system prompt (`*_AGENT_PROMPT` constants)
+
+Subagent definitions in `subagents/` keep only name/description/tools and import their system prompt from `prompts/`. `from prompts import get_system_prompt` works unchanged.
+
+The orchestrator prompt defines:
 - Main orchestrator behavior and research workflow
 - Output format templates for evaluations and comparisons
 - Delegation rules and concurrency limits

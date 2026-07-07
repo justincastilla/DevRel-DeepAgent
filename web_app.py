@@ -94,8 +94,11 @@ SUBAGENT_TOOL_MAP = {
 # Phase detection based on tool names
 def detect_phase(tool_name: str, agent_name: str) -> str:
     """Detect the current research phase based on the tool being called."""
+    # Elastic tools = the "check existing research" step. Must be a phase id
+    # that exists in the UI phase bar (data-phase="checking_cache") or the
+    # step never lights up.
     if tool_name in ELASTIC_TOOL_NAMES:
-        return "data_retrieval"
+        return "checking_cache"
     if tool_name in ("fetch_repo_metrics", "store_research_snapshot"):
         return "fetching_metrics"
     if tool_name in ("fetch_recent_issues", "fetch_repo_discussions"):

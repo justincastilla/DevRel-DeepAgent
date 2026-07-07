@@ -76,9 +76,23 @@ function setReadout(agent, action, { newAction = false, state: stateName } = {})
     }
 }
 
-// Append streamed model text to the thinking buffer.
-function appendThinking(text) {
-    if (!text || !dom.readoutStream) return;
+// Append streamed model text to the thinking buffer. Defensive about shape:
+// older/mismatched backends may send Anthropic block arrays ([{type:"text",
+// text:"..."}]) instead of plain strings — extract the text, never coerce
+// objects (which renders as "[object Object]").
+function appendThinking(content) {
+    if (!content || !dom.readoutStream) return;
+    let text = "";
+    if (typeof content === "string") {
+        text = content;
+    } else if (Array.isArray(content)) {
+        text = content
+            .map((b) => (typeof b === "string" ? b : (b && typeof b.text === "string" ? b.text : "")))
+            .join("");
+    } else if (typeof content.text === "string") {
+        text = content.text;
+    }
+    if (!text) return;
     state.thinkingBuffer += text;
     if (state.thinkingBuffer.length > READOUT_MAX_CHARS) {
         state.thinkingBuffer = state.thinkingBuffer.slice(-READOUT_MAX_CHARS);
