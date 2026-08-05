@@ -1,0 +1,80 @@
+# Meetup demo environment: GPU-accelerated llama.cpp server.
+#
+# The point of this file is that it is the ONLY file. It runs CPU-only on a
+# laptop and CUDA-accelerated on a RunPod GPU pod with no edits and no
+# conditionals -- the `.systems` constraints and `cuda-detection` do the work.
+#
+# Usage:
+#   flox init
+#   flox edit -f manifest.toml
+#   flox activate --start-services
+#
+# Then on a RunPod pod, after scripts/bootstrap-pod.sh:
+#   flox activate -r <you>/<env-name> --start-services
+
+version = 1
+
+[install]
+# CUDA build of llama.cpp -- Linux only. On macOS this entry is skipped and the
+# environment still activates, which is what makes the laptop half of the demo work.
+llama-cpp.pkg-path = "flox-cuda/llama-cpp"
+llama-cpp.systems = ["x86_64-linux"]
+
+# The upstream service scripts: preflight -> resolve-model -> serve.
+llamacpp-flox-runtime.pkg-path = "flox/llamacpp-flox-runtime"
+llamacpp-flox-runtime.pkg-group = "llamacpp-flox-runtime"
+llamacpp-flox-runtime.systems = ["x86_64-linux"]
+
+# Model download + a couple of things you'll want live on stage.
+huggingface-hub.pkg-path = "python312Packages.huggingface-hub"
+curl.pkg-path = "curl"
+jq.pkg-path = "jq"
+
+[hook]
+on-activate = '''
+  # Every knob is overridable at activation time, so you can change models on
+  # stage without editing the manifest:
+  #   LLAMACPP_MODEL=... flox activate --start-services
+
+  export LLAMACPP_MODEL="${LLAMACPP_MODEL:-Phi-4-mini-instruct-Q8_0}"
+  export LLAMACPP_MODEL_ORG="${LLAMACPP_MODEL_ORG:-microsoft}"
+  export LLAMACPP_MODEL_ID="${LLAMACPP_MODEL_ID:-microsoft/Phi-4-mini-instruct-GGUF}"
+  export LLAMACPP_MODEL_FILE="${LLAMACPP_MODEL_FILE:-Phi-4-mini-instruct-Q8_0.gguf}"
+  export LLAMACPP_QUANT="${LLAMACPP_QUANT:-Q8_0}"
+
+  # Point this at a RunPod network volume (e.g. /workspace/models) so the ~4GB
+  # download happens once, the day before, instead of during your slot.
+  export LLAMACPP_MODELS_DIR="${LLAMACPP_MODELS_DIR:-$FLOX_ENV_PROJECT/models}"
+
+  export LLAMACPP_HOST="${LLAMACPP_HOST:-0.0.0.0}"
+  export LLAMACPP_PORT="${LLAMACPP_PORT:-8080}"
+
+  # 99 = offload everything to the GPU. On a laptop with no GPU this is simply
+  # ignored, which is why the same manifest is honest on both machines.
+  export LLAMACPP_N_GPU_LAYERS="${LLAMACPP_N_GPU_LAYERS:-99}"
+  export LLAMACPP_CTX_SIZE="${LLAMACPP_CTX_SIZE:-8192}"
+  export LLAMACPP_FLASH_ATTN="${LLAMACPP_FLASH_ATTN:-true}"
+  export LLAMACPP_CONT_BATCHING="${LLAMACPP_CONT_BATCHING:-true}"
+  export LLAMACPP_METRICS="${LLAMACPP_METRICS:-true}"
+
+  mkdir -p "$LLAMACPP_MODELS_DIR"
+
+  echo "llama.cpp env ready -> http://${LLAMACPP_HOST}:${LLAMACPP_PORT}"
+  echo "  model:  $LLAMACPP_MODEL"
+  echo "  models: $LLAMACPP_MODELS_DIR"
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    echo "  gpu:    $(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)"
+  else
+    echo "  gpu:    none detected (CPU path)"
+  fi
+'''
+
+[services]
+llamacpp.command = "llamacpp-preflight && llamacpp-resolve-model && llamacpp-serve"
+
+[options]
+systems = ["aarch64-darwin", "x86_64-darwin", "aarch64-linux", "x86_64-linux"]
+
+# Finds the host's libcuda.so.1 instead of shipping a driver. The driver belongs
+# to RunPod; the toolkit belongs to Flox. This line is the seam between them.
+cuda-detection = true
